@@ -13,20 +13,19 @@ authors = [
     {name="Sean Mullen", email="sean.mullen@intheon.io"}
 ]
 license = {text = "MIT"}
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3"]
 dependencies = [
-    "numpy",
+    "matplotlib",
+    "numpy>1.24.4",
     "packaging",
     "pandas",
     "pylsl==1.16.2",
-    "pyopengl",
     "pyqtgraph",
-    "pyside2",
     "qtpy",
-    "visbrain",
-    "vispy",
+    "scipy",
+    "vispy[PySide6]",
 ]
 
 [project.scripts]
@@ -34,3 +33,9 @@ lsl_viewer = "stream_viewer.applications.main:main"
 lsl_status = "stream_viewer.applications.stream_status_qml:main"
 lsl_switching_viewer = "stream_viewer.applications.lsl_switching:main"
 lsl_viewer_custom = "stream_viewer.applications.lsl_custom:main"
+
+[project.optional-dependencies]
+brain = [
+    "visbrain>=0.4.5",  # Note: transitive dependency on PyQt5 which has GPL.
+    "pyopengl",  # Cannot remember what this is for
+]

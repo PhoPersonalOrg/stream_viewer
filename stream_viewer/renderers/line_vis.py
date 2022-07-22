@@ -16,7 +16,7 @@ from stream_viewer.renderers.display.vispy import VispyRenderer
 
 
 VERT_SHADER = """
-#version 130
+#version 120
 
 // y coordinate of the `position`: data sample values.
 attribute float a_position;

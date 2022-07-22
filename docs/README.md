@@ -19,7 +19,7 @@ Requirements:
 - numpy
 - PyOpenGL
 - qtpy
-- PySide2
+- PySide6
 - vispy
 - visbrain
 - pylsl

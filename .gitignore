@@ -130,3 +130,6 @@ dmypy.json
 
 # PyCharm
 .idea/
+
+# uv.lock is more trouble than it is worth for public libraries.
+uv.lock
