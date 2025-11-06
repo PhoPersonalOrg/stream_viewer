@@ -8,6 +8,72 @@ from stream_viewer.renderers.data.base import RendererMergeDataSources
 from stream_viewer.renderers.display.visbrain import VisbrainRenderer
 import logging
 
+# -----------------------------------------------------------------------------
+# SciPy 1.14 removed interp2d which visbrain TopoObj uses in set_data via
+# self._grid_interpolation. Patch TopoObj.set_data to avoid calling the
+# interp2d-based path so Topo plots still work without SciPy pinning.
+# -----------------------------------------------------------------------------
+def _patch_visbrain_topo_set_data():
+    try:
+        # Avoid double patching
+        if getattr(TopoObj, "_sv_set_data_patched", False):
+            return
+
+        def _safe_set_data(self, data, levels=None, level_colors='white', cmap='viridis',
+                           clim=None, vmin=None, under='gray', vmax=None, over='red'):
+            # Based on visbrain TopoObj.set_data, but without grid upsampling
+            # that uses interp2d. We keep griddata and color mapping.
+            xyz = self._xyz[self._keeponly]
+            channels = list(np.array(self._channels)[self._keeponly])
+            data = np.asarray(data, dtype=float).ravel()
+            if len(data) == len(self):
+                data = data[self._keeponly]
+
+            # Channel markers (constant size to avoid dependency on visbrain.normalize)
+            radius = np.full(data.shape, 20.0, dtype=float)
+            self.chan_markers.set_data(pos=xyz, size=radius, edge_color='black',
+                                       face_color=self._chan_mark_color,
+                                       symbol=self._chan_mark_symbol)
+
+            # Channel names
+            if channels is not None:
+                self.chan_text.text = channels
+                self.chan_text.pos = xyz
+
+            # Grid from scattered points
+            pos_x, pos_y = xyz[:, 0], xyz[:, 1]
+            xmin, xmax = pos_x.min(), pos_x.max()
+            ymin, ymax = pos_y.min(), pos_y.max()
+            xi = np.linspace(xmin, xmax, self._pix)
+            yi = np.linspace(ymin, ymax, self._pix)
+            xh, yi = np.meshgrid(xi, yi)
+            grid = self._griddata(pos_x, pos_y, data, xh, yi)
+
+            # Disc mask (no upsampling/interpolation)
+            csize = max(self._pix, grid.shape[0])
+            l = csize / 2  # noqa
+            y, x = np.ogrid[-l:l, -l:l]
+            mask = x ** 2 + y ** 2 < l ** 2
+            nmask = np.invert(mask)
+
+            # Colormap
+            d_min, d_max = float(np.min(data)), float(np.max(data))
+            _clim = (d_min, d_max) if clim is None else clim
+            self._update_cbar_args(cmap, _clim, vmin, vmax, under, over)
+            grid_color = array2colormap(grid, **self.to_kwargs())
+            grid_color[nmask, -1] = 0.0
+            self.disc.set_data(grid_color)
+            # Note: levels/isocurves omitted for compatibility; not used by this app.
+
+        TopoObj.set_data = _safe_set_data
+        TopoObj._sv_set_data_patched = True
+    except Exception:
+        # If patching fails, we leave original behavior (may error on SciPy>=1.14)
+        pass
+
+# Apply the patch at import time
+_patch_visbrain_topo_set_data()
+
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +83,7 @@ class TopoVB(RendererMergeDataSources, VisbrainRenderer):
     # COMPAT_ICONTROL = ['TopoControlPanel']
     gui_kwargs = dict(VisbrainRenderer.gui_kwargs, **RendererMergeDataSources.gui_kwargs,
                       show_disc_colors=bool, show_head_colors=bool, show_disc_size=bool,
-                      disc_size_min=float, disc_size_max=float)
+                      disc_size_min=float, disc_size_max=float, auto_color_scale=bool)
 
     def __init__(self,
                  # Overwrite defaults in RendererFormatData
@@ -28,6 +94,7 @@ class TopoVB(RendererMergeDataSources, VisbrainRenderer):
                  show_disc_size: bool = False,
                  disc_size_min: float = 20.,
                  disc_size_max: float = 50.,
+                 auto_color_scale: bool = True,
                  **kwargs):
         """
         Topoplot using visbrain.
@@ -47,6 +114,8 @@ class TopoVB(RendererMergeDataSources, VisbrainRenderer):
         self._show_disc_size = show_disc_size
         self._disc_size_min = disc_size_min
         self._disc_size_max = disc_size_max
+        self._auto_color_scale = auto_color_scale
+        self._last_cbar_limits = None
         # Make sure to pass overwritten kwarg defaults to super.
         super().__init__(show_chan_labels=show_chan_labels, **kwargs)
         self.reset_renderer()
@@ -81,7 +150,9 @@ class TopoVB(RendererMergeDataSources, VisbrainRenderer):
                          " or 'name' field with known channel labels.")
             return
 
-        dummy_data = np.zeros((n_vis,))[self._b_keep]
+        # Build placeholder data the same length as visible channels; TopoObj
+        # will internally select valid channels using its own keeponly mask.
+        dummy_data = np.zeros((n_vis,))
         if self.show_head_colors:
             dummy_data[:] = (self.lower_limit + self.upper_limit) / 2
             dummy_data[0] = self.lower_limit
@@ -92,15 +163,24 @@ class TopoVB(RendererMergeDataSources, VisbrainRenderer):
         if (isinstance(self.bg_color, str) and self.bg_color == 'black') or\
                 (hasattr(self.bg_color, 'rgba') and not np.any(self.bg_color.rgba[:3])):
             line_color = 'white'
-        self._obj = TopoObj('topo', dummy_data, xyz=pos[self._b_keep],
+
+        # Important: pass channel names so visbrain derives coordinates in the
+        # expected spherical system and applies its transforms. Do NOT pass our
+        # precomputed xyz from the template here, or they will be treated as
+        # cartesian and collapse along an axis.
+        self._obj = TopoObj('topo', dummy_data,
                             line_color=line_color,
-                            channels=(chan_labels if self._show_chan_labels else np.full(n_vis, ''))[self._b_keep],
+                            channels=(chan_labels if self._show_chan_labels else np.full(n_vis, '')),
                             cmap=self.color_set)
 
     def reset_renderer(self, **kwargs):
         if len(self.chan_states) == 0:
             return
         super().reset_renderer(**kwargs)
+
+        # Disable interpolation paths that rely on SciPy interp2d
+        if hasattr(self._obj, '_interp'):
+            self._obj._interp = None
 
         self._prepare_grid()
 
@@ -165,6 +245,18 @@ class TopoVB(RendererMergeDataSources, VisbrainRenderer):
 
         data = data[self._b_keep, -1]
         data = data.astype(float).ravel()
+
+        # Auto color scaling to current data range (avoids constant-color markers)
+        if self._auto_color_scale and data.size > 0 and np.all(np.isfinite(data)):
+            d_min = float(np.min(data))
+            d_max = float(np.max(data))
+            if not self._last_cbar_limits or (abs(d_min - self._last_cbar_limits[0]) > 1e-9 or
+                                              abs(d_max - self._last_cbar_limits[1]) > 1e-9):
+                if d_max <= d_min:
+                    d_max = d_min + np.finfo(np.float32).eps
+                self._obj._update_cbar_args(self.color_set, (d_min, d_max),
+                                            None, None, None, None)
+                self._last_cbar_limits = (d_min, d_max)
 
         # Minimal reproduction of self._obj.set_data(data, cmap=self.color_set)
 

@@ -38,5 +38,5 @@ class BarControlPanel(IControlPanel):
                 _slider.valueChanged.disconnect()
             except TypeError:
                 pass
-            _slider.setValue(renderer.bar_width)
+            _slider.setValue(int(round(renderer.bar_width)))
             _slider.valueChanged.connect(renderer.slider_widthChanged)
