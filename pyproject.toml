@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stream-viewer"
-version = "0.28.1"
+version = "0.28.2"
 description = 'Tools to visualize data streamed with Lab Streaming Layer'
 keywords = ["lsl", "lab streaming layer", "streaming", "visualization", "eeg", "neural data"]
 readme = "docs/README.md"
@@ -18,13 +18,17 @@ classifiers = [
     "Programming Language :: Python :: 3"]
 dependencies = [
     "numpy",
+    "matplotlib>=3.7.5",
     "packaging",
     "pandas",
-    "pylsl==1.16.2",
+    "pylsl>=1.16.2",
     "pyopengl",
+    "pyqt5==5.15.11",
+    "pyqt5-qt5==5.15.2",
     "pyqtgraph",
-    "pyside2",
     "qtpy",
+    "scipy",
+    "setuptools>=75.3.2",
     "visbrain",
     "vispy",
 ]
@@ -34,3 +38,11 @@ lsl_viewer = "stream_viewer.applications.main:main"
 lsl_status = "stream_viewer.applications.stream_status_qml:main"
 lsl_switching_viewer = "stream_viewer.applications.lsl_switching:main"
 lsl_viewer_custom = "stream_viewer.applications.lsl_custom:main"
+
+[dependency-groups]
+dev = [
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.6.23",
+    "mkdocstrings>=0.26.1",
+    "pygments>=2.19.2",
+]
