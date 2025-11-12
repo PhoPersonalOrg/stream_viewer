@@ -273,9 +273,9 @@ class RendererBufferData(RendererFormatData):
     gui_kwargs = dict(RendererFormatData.gui_kwargs, plot_mode=str, duration=float, auto_scale=str)
 
     def __init__(self,
-                 plot_mode: str = "Scrolling",
-                 duration: float = 2.0,
-                 auto_scale: str = "none",
+                 plot_mode: str = "Sweep",
+                 duration: float = 10.0,
+                 auto_scale: str = "by-channel",
                  **kwargs,
                  ):
         """

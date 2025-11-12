@@ -90,6 +90,9 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         self._last_total_frames = [0 for _ in range(len(self._data_sources))]
         self._locked_levels = [None for _ in range(len(self._data_sources))]
         self._last_t_end = [None for _ in range(len(self._data_sources))]
+        # New state for sample-based column tracking
+        self._last_write_indices = [None for _ in range(len(self._data_sources))]
+        self._sample_carries = [0 for _ in range(len(self._data_sources))]
 
         if len(self.chan_states) == 0:
             return
@@ -221,7 +224,8 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                 # Average across visible channels (ignore NaNs)
                 buff_data = self._buffers[src_ix]._data
                 if buff_data.size == 0 or buff_data.shape[0] == 0 or buff_data.shape[1] == 0:
-                    x = np.array([], dtype=float)
+                    # No data to process for this source
+                    continue
                 else:
                     x = np.nanmean(buff_data, axis=0)
                     x = np.nan_to_num(x, nan=0.0)
@@ -254,12 +258,24 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                             f_mask = self._freq_masks[src_ix]
                             P_use = Pxx[f_mask, :]
 
-                            # Determine how many new frames arrived since last update
-                            # Use spectrogram frame count difference to determine new columns
-                            total_frames = int(P_use.shape[1])
-                            prev_frames = int(self._last_total_frames[src_ix] or 0)
-                            new = max(0, total_frames - prev_frames)
-                            self._last_total_frames[src_ix] = total_frames
+                            # Determine new columns from buffer write index progression
+                            buf = self._buffers[src_ix]
+                            buf_len = int(buf._data.shape[1]) if buf._data.ndim == 2 else 0
+                            if buf_len > 0 and hasattr(buf, "_write_idx"):
+                                curr_wi = int(buf._write_idx)
+                                prev_wi = self._last_write_indices[src_ix]
+                                if prev_wi is None:
+                                    self._last_write_indices[src_ix] = curr_wi
+                                    new = 0
+                                else:
+                                    delta = (curr_wi - prev_wi) % buf_len
+                                    self._last_write_indices[src_ix] = curr_wi
+                                    self._sample_carries[src_ix] += delta
+                                    hop = int(self._hop_sizes[src_ix] or max(1, self._nperseg - self._noverlap))
+                                    new = int(self._sample_carries[src_ix] // hop)
+                                    self._sample_carries[src_ix] %= hop
+                            else:
+                                new = 0
                             if new > 0:
                                 heat = self._heatmaps[src_ix]
                                 n_cols = heat.shape[1]
@@ -281,6 +297,23 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
 
                                 self._heatmaps[src_ix] = heat
 
+                            # Prepare display heatmap (reassemble for Sweep mode to avoid wrap visual jump)
+                            if self._heatmaps[src_ix] is not None:
+                                if self.plot_mode == "Sweep":
+                                    widx = int(self._write_indices[src_ix])
+                                    heat = self._heatmaps[src_ix]
+                                    if heat.shape[1] > 1:
+                                        display = np.hstack([heat[:, (widx+1):], heat[:, : (widx+1)]])
+                                    else:
+                                        display = heat
+                                else:
+                                    display = self._heatmaps[src_ix]
+                                # Replace NaN values with a default for rendering (prevents display issues)
+                                if not np.isfinite(display).all():
+                                    display = np.nan_to_num(display, nan=-120.0)
+                            else:
+                                display = None
+
                             # Stable color levels
                             levels = self._locked_levels[src_ix]
                             if self._auto_scale == 'none':
@@ -299,13 +332,14 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                                     else:
                                         levels = (-120.0, 0.0)
 
-                            # Update image from persistent heatmap
-                            img = self._image_items[src_ix]
-                            img.setImage(self._heatmaps[src_ix], levels=levels, autoLevels=False)
-                            img.setLookupTable(lut)
-                            img.setRect(pg.QtCore.QRectF(0.0, float(self._fmin_hz),
-                                                         float(self.duration),
-                                                         float(self._fmax_hz - self._fmin_hz)))
+                            # Update image from display heatmap
+                            if display is not None:
+                                img = self._image_items[src_ix]
+                                img.setImage(display, levels=levels, autoLevels=False)
+                                img.setLookupTable(lut)
+                                img.setRect(pg.QtCore.QRectF(0.0, float(self._fmin_hz),
+                                                             float(self.duration),
+                                                             float(self._fmax_hz - self._fmin_hz)))
 
             # Update expiry threshold
             if not self._buffers[src_ix]._tvec.size:
@@ -351,6 +385,15 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     @ylabel_as_title.setter
     def ylabel_as_title(self, value):
         self._ylabel_as_title = value
+        self.reset_renderer(reset_channel_labels=True)
+
+    @property
+    def ylabel(self):
+        return self._ylabel
+
+    @ylabel.setter
+    def ylabel(self, value):
+        self._ylabel = value
         self.reset_renderer(reset_channel_labels=True)
 
     @property
