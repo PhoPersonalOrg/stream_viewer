@@ -99,6 +99,15 @@ class LSLViewer(QtWidgets.QMainWindow):
         # stream_settings_act = QtWidgets.QAction("&Stream Settings", self)
         # stream_settings_act.setObjectName("stream_settings_action")  # For easier lookup
 
+        # File menu actions for visualization layout
+        file_menu = self.menuBar().addMenu("&File")
+        save_layout_act = QtWidgets.QAction("Save Visualization Layout...", self)
+        save_layout_act.triggered.connect(self._on_save_visualization_layout)
+        load_layout_act = QtWidgets.QAction("Load Visualization Layout...", self)
+        load_layout_act.triggered.connect(self._on_load_visualization_layout)
+        file_menu.addAction(save_layout_act)
+        file_menu.addAction(load_layout_act)
+
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(refresh_act)
         view_menu.addAction(prefs_act)
@@ -173,6 +182,12 @@ class LSLViewer(QtWidgets.QMainWindow):
     def saveSettings(self):
         settings = QtCore.QSettings(str(self._settings_path), QtCore.QSettings.IniFormat)
 
+        # Prune stale renderer groups at root (renderer configs keyed by rend_key)
+        reserved_groups = set(["MainWindow", "PluginFolders", "StreamStatus", "RendererDocksMain"])
+        for grp in settings.childGroups():
+            if grp not in reserved_groups and grp not in set(self._open_renderers):
+                settings.remove(grp)
+
         # Save MainWindow geometry.
         settings.beginGroup("MainWindow")
         settings.setValue("fullScreen", self.isFullScreen())
@@ -204,6 +219,8 @@ class LSLViewer(QtWidgets.QMainWindow):
 
         # Save all of the docks' geometry. They are keyed by the dock object name,
         # which is probably equivalent to ";".join([renderer_name, first_src.identifier])
+        # Clear old geometry first to avoid resurrecting closed docks
+        settings.remove("RendererDocksMain")
         settings.beginGroup("RendererDocksMain")
         dws = [_ for _ in self.findChildren(QtWidgets.QDockWidget) if _ is not status_dock]
         for rend_dw in dws:
@@ -239,6 +256,9 @@ class LSLViewer(QtWidgets.QMainWindow):
 
     @QtCore.Slot(dict)
     def on_stream_activated(self, sources, renderer_name=None, renderer_kwargs={}):
+        return self.on_stream_activated(sources, renderer_name=renderer_name, renderer_kwargs=renderer_kwargs, forced_rend_key=None)
+
+    def on_stream_activated(self, sources, renderer_name=None, renderer_kwargs={}, forced_rend_key=None):
         # Normalize renderer_name: if not provided then use a popup combo box.
         if renderer_name is None:
             item, ok = QtWidgets.QInputDialog.getItem(self, "Select Renderer", "Found Renderers",
@@ -277,10 +297,13 @@ class LSLViewer(QtWidgets.QMainWindow):
 
         # Renderer not already open. We need a new dock, a control panel, and a renderer with sources added.
         # We keep track of these with a key derived from the renderer_name and the source identifier
-        src_id = json.loads(sources[0].identifier)
-        rend_key = "|".join([renderer_name, src_id['name']])
-        n_match = len([_ for _ in self._open_renderers if _.startswith(rend_key)])
-        rend_key = rend_key + "|" + str(n_match)
+        if forced_rend_key is not None:
+            rend_key = forced_rend_key
+        else:
+            src_id = json.loads(sources[0].identifier)
+            rend_key = "|".join([renderer_name, src_id['name']])
+            n_match = len([_ for _ in self._open_renderers if _.startswith(rend_key)])
+            rend_key = rend_key + "|" + str(n_match)
 
         # New dock
         dock = QtWidgets.QDockWidget(rend_key, self)
@@ -331,6 +354,107 @@ class LSLViewer(QtWidgets.QMainWindow):
 
     def update(self):
         pass
+
+    @QtCore.Slot()
+    def _on_save_visualization_layout(self):
+        # Prompt for file
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Visualization Layout", str(self._settings_path.with_suffix('.vis_config')),
+            "Visualization Layout (*.vis_config)"
+        )
+        if not path:
+            return
+        self.save_visualization_layout(path)
+
+    @QtCore.Slot()
+    def _on_load_visualization_layout(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Visualization Layout", str(self._settings_path.with_suffix('.vis_config')),
+            "Visualization Layout (*.vis_config)"
+        )
+        if not path:
+            return
+        self.load_visualization_layout(path)
+
+    def save_visualization_layout(self, filepath: str):
+        settings = QtCore.QSettings(filepath, QtCore.QSettings.IniFormat)
+
+        # Clear previous content for a clean snapshot
+        reserved_groups = set(["RendererDocksMain"])  # In vis_config we only store renderer stuff
+        for grp in settings.childGroups():
+            if grp not in reserved_groups and grp not in set(self._open_renderers):
+                settings.remove(grp)
+        settings.remove("RendererDocksMain")
+
+        # Save only renderer docks geometry
+        status_dock = self.findChild(QtWidgets.QDockWidget, name="StatusPanel")
+        settings.beginGroup("RendererDocksMain")
+        dws = [_ for _ in self.findChildren(QtWidgets.QDockWidget) if _ is not status_dock]
+        for rend_dw in dws:
+            settings.beginGroup(rend_dw.objectName())  # Same as rend_key
+            settings.setValue("dockWidgetArea", self.dockWidgetArea(rend_dw))
+            settings.setValue("size", rend_dw.size())
+            settings.setValue("pos", rend_dw.pos())
+            settings.setValue("floating", rend_dw.isFloating())
+            settings.endGroup()
+        settings.endGroup()
+
+        # Save each renderer's settings into top-level groups keyed by rend_key
+        for rend_key in self._open_renderers:
+            dw = self.findChild(QtWidgets.QDockWidget, rend_key)
+            if dw is None:
+                continue
+            stream_widget = dw.widget()  # instance of ConfigAndRenderWidget
+            renderer = stream_widget.renderer
+            settings = renderer.save_settings(settings=settings)
+
+        settings.sync()
+
+    def load_visualization_layout(self, filepath: str):
+        # Replace current layout: close existing renderer docks (keep StatusPanel)
+        status_dock = self.findChild(QtWidgets.QDockWidget, name="StatusPanel")
+        for rend_dw in [_ for _ in self.findChildren(QtWidgets.QDockWidget) if _ is not status_dock]:
+            rend_dw.close()
+        self._open_renderers = []
+
+        settings = QtCore.QSettings(filepath, QtCore.QSettings.IniFormat)
+
+        # Read renderer keys from geometry group
+        settings.beginGroup("RendererDocksMain")
+        dock_groups = settings.childGroups()
+        settings.endGroup()
+
+        for dock_name in dock_groups:
+            # Build data sources and renderer kwargs from the renderer group
+            settings.beginGroup(dock_name)
+            settings.beginGroup("data_sources")
+            data_sources = []
+            for ds_id in settings.childGroups():
+                settings.beginGroup(ds_id)
+                src_cls = getattr(stream_viewer.data, settings.value("class"))
+                src_key = settings.value("identifier")
+                if issubclass(src_cls, LSLDataSource):
+                    data_sources.append(src_cls(json.loads(src_key)))
+                settings.endGroup()
+            settings.endGroup()
+            rend_name = dock_name.split("|")[0]
+            rend_cls = load_renderer(rend_name, extra_search_dirs=self._plugin_dirs['renderers'])
+            rend_kwargs = get_kwargs_from_settings(settings, rend_cls)
+            settings.endGroup()
+
+            # Create the dock/renderer with forced key
+            self.on_stream_activated(data_sources, renderer_name=rend_name, renderer_kwargs=rend_kwargs, forced_rend_key=dock_name)
+
+            # Apply geometry from the vis_config file
+            settings.beginGroup("RendererDocksMain")
+            settings.beginGroup(dock_name)
+            dock = self.findChild(QtWidgets.QDockWidget, dock_name)
+            if dock is not None and settings.value("floating", 'false') == 'true':
+                dock.setFloating(True)
+                dock.resize(settings.value("size"))
+                dock.move(settings.value("pos"))
+            settings.endGroup()
+            settings.endGroup()
 
     @QtCore.Slot(bool)
     def onDockVisChanged(self, visible, rkey: str=''):

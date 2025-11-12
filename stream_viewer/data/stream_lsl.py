@@ -148,6 +148,13 @@ class LSLDataSource(IDataSource):
         return json.dumps(id)
 
     @property
+    def is_connected(self) -> bool:
+        """
+        True when an inlet has been created (i.e., the target stream has been resolved).
+        """
+        return self._inlet is not None
+
+    @property
     def data_stats(self):
         chan_states = []
         chan_names = []

@@ -39,7 +39,7 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                  ylabel_width: int = None,
                  ylabel: str = None,
                  fmin_hz: float = 1.0,
-                 fmax_hz: float = 40.0,
+                 fmax_hz: float = 42.0,
                  nperseg: int = 256,
                  noverlap: int = 128,
                  **kwargs):
@@ -61,6 +61,15 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         self._marker_info = deque()
         self._t_expired = -np.inf
         self._image_items = []
+        # Per-source state for column-wise updates
+        self._heatmaps = []
+        self._freq_masks = []
+        self._n_time_cols = []
+        self._hop_sizes = []
+        self._write_indices = []
+        self._last_total_frames = []
+        self._locked_levels = []
+        self._last_t_end = []
 
         super().__init__(show_chan_labels=show_chan_labels, color_set=color_set, **kwargs)
         self.reset_renderer()
@@ -73,6 +82,14 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         self._widget.setBackground(self.parse_color_str(self.bg_color))
         self._src_last_marker_time = [-np.inf for _ in range(len(self._data_sources))]
         self._image_items = []
+        self._heatmaps = [None for _ in range(len(self._data_sources))]
+        self._freq_masks = [None for _ in range(len(self._data_sources))]
+        self._n_time_cols = [None for _ in range(len(self._data_sources))]
+        self._hop_sizes = [None for _ in range(len(self._data_sources))]
+        self._write_indices = [0 for _ in range(len(self._data_sources))]
+        self._last_total_frames = [0 for _ in range(len(self._data_sources))]
+        self._locked_levels = [None for _ in range(len(self._data_sources))]
+        self._last_t_end = [None for _ in range(len(self._data_sources))]
 
         if len(self.chan_states) == 0:
             return
@@ -135,6 +152,32 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         self._widget.ci.setSpacing(10. if self.ylabel_as_title else 0.)
         self._do_yaxis_sync = True
 
+    def _ensure_source_state(self, src_ix, srate, f, Pxx):
+        # Initialize frequency mask
+        if self._freq_masks[src_ix] is None and f is not None and f.size:
+            f_mask = (f >= float(self._fmin_hz)) & (f <= float(self._fmax_hz))
+            if not np.any(f_mask):
+                f_mask = np.ones_like(f, dtype=bool)
+            self._freq_masks[src_ix] = f_mask
+
+        # Initialize hop and column count
+        if self._hop_sizes[src_ix] is None and srate > 0:
+            hop = max(1, int(self._nperseg - self._noverlap))
+            N = max(0, int(srate * self.duration))
+            n_cols = 1 + max(0, (N - int(self._nperseg)) // hop) if N >= int(self._nperseg) else 1
+            self._hop_sizes[src_ix] = hop
+            self._n_time_cols[src_ix] = n_cols
+
+        # Initialize heatmap with NaNs sized to freq mask and columns
+        if (self._heatmaps[src_ix] is None) and (self._freq_masks[src_ix] is not None) and (self._n_time_cols[src_ix] is not None):
+            n_freq = int(np.sum(self._freq_masks[src_ix]))
+            n_cols = int(self._n_time_cols[src_ix])
+            self._heatmaps[src_ix] = np.full((n_freq, n_cols), np.nan, dtype=float)
+            self._write_indices[src_ix] = 0
+            self._last_total_frames[src_ix] = 0
+            self._locked_levels[src_ix] = None
+            self._last_t_end[src_ix] = None
+
     def sync_y_axes(self):
         max_width = self._ylabel_width or 0.
         for src_ix in range(len(self._data_sources)):
@@ -173,11 +216,11 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             if self._do_yaxis_sync:
                 self.sync_y_axes()
 
-            # Spectrogram from buffered latest window
+            # Spectrogram from buffered latest window (compute once per tick)
             if self._buffers[src_ix]._data.size:
                 # Average across visible channels (ignore NaNs)
                 buff_data = self._buffers[src_ix]._data
-                if buff_data.size == 0 or buff_data.shape[1] == 0:
+                if buff_data.size == 0 or buff_data.shape[0] == 0 or buff_data.shape[1] == 0:
                     x = np.array([], dtype=float)
                 else:
                     x = np.nanmean(buff_data, axis=0)
@@ -202,48 +245,67 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                     if Sxx.size:
                         # Convert to dB
                         Pxx = 10.0 * np.log10(Sxx + 1e-12)
-                        # Crop frequency range
-                        f_mask = (f >= float(self._fmin_hz)) & (f <= float(self._fmax_hz))
-                        if np.any(f_mask):
-                            f_use = f[f_mask]
+                        # Ensure state initialized (freq mask, columns, heatmap)
+                        self._ensure_source_state(src_ix, srate, f, Pxx)
+                        if self._freq_masks[src_ix] is None or self._heatmaps[src_ix] is None:
+                            # Not enough information yet to render
+                            pass
+                        else:
+                            f_mask = self._freq_masks[src_ix]
                             P_use = Pxx[f_mask, :]
-                        else:
-                            f_use, P_use = f, Pxx
 
-                        # Map to [0, duration] seconds for current window
-                        # Use the buffer tvec to compute relative time if available; else normalize t
-                        if self._buffers[src_ix]._tvec.size:
-                            t0 = self._buffers[src_ix]._tvec[0]
-                            t1 = self._buffers[src_ix]._tvec[-1]
-                            dur = max(1e-6, (t1 - t0))
-                            # Stretch t to 0..duration based on actual window duration; clamp to configured duration
-                            t_scale = (t / max(np.max(t), 1e-6)) * min(self.duration, dur)
-                            t_use = t_scale
-                        else:
-                            # Normalize spectrogram internal time to 0..duration
-                            t_norm = (t - (t[0] if len(t) else 0.0))
-                            t_use = (t_norm / max(t_norm[-1], 1e-6)) * self.duration if len(t_norm) else t_norm
+                            # Determine how many new frames arrived since last update
+                            # Use spectrogram frame count difference to determine new columns
+                            total_frames = int(P_use.shape[1])
+                            prev_frames = int(self._last_total_frames[src_ix] or 0)
+                            new = max(0, total_frames - prev_frames)
+                            self._last_total_frames[src_ix] = total_frames
+                            if new > 0:
+                                heat = self._heatmaps[src_ix]
+                                n_cols = heat.shape[1]
+                                new = min(new, P_use.shape[1], n_cols)
+                                if self.plot_mode != "Sweep":
+                                    # Scroll: roll left and append new columns on the right
+                                    if new >= n_cols:
+                                        heat[:, :] = P_use[:, -n_cols:]
+                                    else:
+                                        heat[:, :-new] = heat[:, new:]
+                                        heat[:, -new:] = P_use[:, -new:]
+                                else:
+                                    # Sweep: circular write into columns
+                                    widx = self._write_indices[src_ix] or 0
+                                    for k in range(new):
+                                        col = (widx + k) % n_cols
+                                        heat[:, col] = P_use[:, -new + k]
+                                    self._write_indices[src_ix] = (widx + new) % n_cols
 
-                        # Compute explicit levels for float image types
-                        if self._auto_scale != 'none':
-                            vmin = np.nanmin(P_use) if P_use.size else -120.0
-                            vmax = np.nanmax(P_use) if P_use.size else 0.0
-                            if not np.isfinite(vmin) or not np.isfinite(vmax) or (vmax <= vmin):
-                                vmin, vmax = -120.0, 0.0
-                        else:
-                            # Use renderer limits as dB levels when auto_scale == 'none'
-                            vmin, vmax = float(self.lower_limit), float(self.upper_limit)
-                            if not np.isfinite(vmin) or not np.isfinite(vmax) or (vmax <= vmin):
-                                vmin, vmax = -120.0, 0.0
+                                self._heatmaps[src_ix] = heat
 
-                        # Update image
-                        img = self._image_items[src_ix]
-                        img.setImage(P_use, levels=(float(vmin), float(vmax)), autoLevels=False)
-                        img.setLookupTable(lut)
-                        # Rect maps image to plot coordinates: (x, y, w, h)
-                        img.setRect(pg.QtCore.QRectF(0.0, float(self._fmin_hz),
-                                                     float(self.duration),
-                                                     float(self._fmax_hz - self._fmin_hz)))
+                            # Stable color levels
+                            levels = self._locked_levels[src_ix]
+                            if self._auto_scale == 'none':
+                                levels = (float(self.lower_limit), float(self.upper_limit))
+                            else:
+                                if levels is None:
+                                    # Lock from current heat (ignore NaNs)
+                                    h = self._heatmaps[src_ix]
+                                    if np.isfinite(h).any():
+                                        hmin = float(np.nanmin(h))
+                                        hmax = float(np.nanmax(h))
+                                        if not np.isfinite(hmin) or not np.isfinite(hmax) or (hmax <= hmin):
+                                            hmin, hmax = -120.0, 0.0
+                                        levels = (hmin, hmax)
+                                        self._locked_levels[src_ix] = levels
+                                    else:
+                                        levels = (-120.0, 0.0)
+
+                            # Update image from persistent heatmap
+                            img = self._image_items[src_ix]
+                            img.setImage(self._heatmaps[src_ix], levels=levels, autoLevels=False)
+                            img.setLookupTable(lut)
+                            img.setRect(pg.QtCore.QRectF(0.0, float(self._fmin_hz),
+                                                         float(self.duration),
+                                                         float(self._fmax_hz - self._fmin_hz)))
 
             # Update expiry threshold
             if not self._buffers[src_ix]._tvec.size:

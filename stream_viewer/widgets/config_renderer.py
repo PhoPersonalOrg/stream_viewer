@@ -1,4 +1,4 @@
-from qtpy import QtWidgets
+from qtpy import QtWidgets, QtCore
 from stream_viewer.widgets.control_panel import HidableCtrlWrapWidget
 
 
@@ -23,9 +23,63 @@ class ConfigAndRenderWidget(QtWidgets.QWidget):
             self.layout().addWidget(settings_widget)
 
         self.renderer = renderer
-        renderer.native_widget.setParent(self)
-        self.layout().addWidget(renderer.native_widget)
+
+        # Right panel with stacked layout: placeholder + renderer widget
+        right_panel = QtWidgets.QWidget(self)
+        right_panel.setLayout(QtWidgets.QStackedLayout())
+        self._stack = right_panel.layout()
+
+        # Placeholder shown until sources are connected
+        self._placeholder = QtWidgets.QLabel(parent=right_panel)
+        self._placeholder.setAlignment(QtCore.Qt.AlignCenter)
+        self._placeholder.setWordWrap(True)
+        self._placeholder.setText("Waiting for stream...")
+        self._stack.addWidget(self._placeholder)
+
+        # Actual renderer widget
+        renderer.native_widget.setParent(right_panel)
+        self._stack.addWidget(renderer.native_widget)
+
+        # Add right panel to main layout
+        self.layout().addWidget(right_panel)
+
+        # React to renderer/source changes
+        if hasattr(self.renderer, 'chan_states_changed'):
+            self.renderer.chan_states_changed.connect(self._update_source_status)
+        # Initial state
+        self._update_source_status(self.renderer)
 
     @property
     def control_panel(self):
         return self.children()[1].control_panel
+
+    @QtCore.Slot(QtCore.QObject)
+    def _update_source_status(self, *_):
+        # Determine connection status and placeholder text
+        sources = getattr(self.renderer, "_data_sources", [])
+        waiting_names = []
+        all_connected = True
+        for src in sources:
+            is_conn = getattr(src, "is_connected", True)
+            if not is_conn:
+                all_connected = False
+                # Try to extract user-friendly name from identifier JSON
+                name = None
+                try:
+                    import json
+                    ident = json.loads(src.identifier) if hasattr(src, "identifier") else {}
+                    name = ident.get("name", None)
+                except Exception:
+                    name = None
+                waiting_names.append(name or "unknown")
+
+        if all_connected or len(sources) == 0:
+            # Show renderer
+            self._stack.setCurrentIndex(1)
+        else:
+            # Show placeholder
+            if waiting_names:
+                self._placeholder.setText("Waiting for stream: " + ", ".join(waiting_names))
+            else:
+                self._placeholder.setText("Waiting for stream...")
+            self._stack.setCurrentIndex(0)

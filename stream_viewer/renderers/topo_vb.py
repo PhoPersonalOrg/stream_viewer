@@ -289,6 +289,15 @@ class TopoVB(RendererMergeDataSources, VisbrainRenderer):
             self._obj.disc.set_data(grid_color)
 
     @property
+    def auto_color_scale(self):
+        return self._auto_color_scale
+
+    @auto_color_scale.setter
+    def auto_color_scale(self, value: bool):
+        self._auto_color_scale = bool(value)
+        # No reset required; takes effect on next update.
+
+    @property
     def show_disc_colors(self):
         return self._show_disc_colors
 
