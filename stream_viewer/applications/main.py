@@ -252,6 +252,9 @@ class LSLViewer(QtWidgets.QMainWindow):
         # Normalize sources. str -> [strs] -> [dicts] -> [LSLDataSources]
         if not isinstance(sources, list):
             sources = [sources]
+        # If there are no sources, nothing to activate; return gracefully
+        if len(sources) == 0:
+            return
         for src_ix, src in enumerate(sources):
             if isinstance(src, str):
                 src = json.loads(src)
