@@ -1,5 +1,6 @@
 from qtpy import QtWidgets
 from qtpy import QtCore
+from qtpy import QtGui
 
 
 class IControlPanel(QtWidgets.QWidget):
@@ -99,7 +100,7 @@ class IControlPanel(QtWidgets.QWidget):
         self._last_row = row_ix
 
     def reset_widgets(self, renderer):
-        # self._renderer = renderer
+        self._renderer = renderer
         _tree = self.findChild(QtWidgets.QTreeWidget, name="Chans_TreeWidget")
         try:
             _tree.itemChanged.disconnect()
@@ -113,6 +114,27 @@ class IControlPanel(QtWidgets.QWidget):
                 chstate_item.setText(0, label)
                 chstate_item.setCheckState(0, QtCore.Qt.Checked if vis else QtCore.Qt.Unchecked)
         _tree.itemChanged.connect(renderer.chantree_itemChanged)
+
+        # Initialize keyboard shortcuts once (scoped to the tree and its children)
+        if not _tree.property("shortcuts_initialized"):
+            select_all_sc = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+A"), _tree)
+            select_all_sc.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+            select_all_sc.activated.connect(self._check_all_channels)
+
+            deselect_all_sc = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Shift+A"), _tree)
+            deselect_all_sc.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+            deselect_all_sc.activated.connect(self._uncheck_all_channels)
+
+            # Ensure lifetime and mark initialized
+            self._shortcuts = getattr(self, "_shortcuts", [])
+            self._shortcuts.extend([select_all_sc, deselect_all_sc])
+            _tree.setProperty("shortcuts_initialized", True)
+
+        # Initialize context menu on parent item ("View Channels") once
+        if not _tree.property("context_menu_initialized"):
+            _tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+            _tree.customContextMenuRequested.connect(lambda p, t=_tree: self._on_chan_tree_context_menu(t, p))
+            _tree.setProperty("context_menu_initialized", True)
 
         # show names checkbox
         _checkbox = self.findChild(QtWidgets.QCheckBox, name="ShowNames_CheckBox")
@@ -180,3 +202,35 @@ class IControlPanel(QtWidgets.QWidget):
             pass
         _spinbox.setValue(renderer.highpass_cutoff)
         _spinbox.valueChanged.connect(renderer.highpass_cutoff_valueChanged)
+
+    def _set_all_channels_checked(self, checked: bool):
+        _tree = self.findChild(QtWidgets.QTreeWidget, name="Chans_TreeWidget")
+        tli = _tree.topLevelItem(0) if _tree is not None else None
+        if tli is None:
+            return
+        target_state = QtCore.Qt.Checked if checked else QtCore.Qt.Unchecked
+        for i in range(tli.childCount()):
+            child = tli.child(i)
+            if child.checkState(0) != target_state:
+                child.setCheckState(0, target_state)
+
+    def _check_all_channels(self):
+        self._set_all_channels_checked(True)
+
+    def _uncheck_all_channels(self):
+        self._set_all_channels_checked(False)
+
+    def _on_chan_tree_context_menu(self, tree: QtWidgets.QTreeWidget, pos: QtCore.QPoint):
+        item = tree.itemAt(pos)
+        tli = tree.topLevelItem(0) if tree is not None else None
+        if item is None or item != tli:
+            return
+
+        menu = QtWidgets.QMenu(tree)
+        act_select = menu.addAction("Select all")
+        act_deselect = menu.addAction("Deselect all")
+        chosen = menu.exec_(tree.viewport().mapToGlobal(pos))
+        if chosen == act_select:
+            self._check_all_channels()
+        elif chosen == act_deselect:
+            self._uncheck_all_channels()
