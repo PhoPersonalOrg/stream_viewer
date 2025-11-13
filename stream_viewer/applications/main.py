@@ -6,6 +6,7 @@ import functools
 import argparse
 from pathlib import Path
 from qtpy import QtWidgets, QtCore
+from qtpy.QtGui import QIcon
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 import stream_viewer
 from stream_viewer.data import LSLDataSource
@@ -483,7 +484,22 @@ def main():
     app.setOrganizationName("LabStreamingLayer")
     app.setOrganizationDomain("labstreaminglayer.org")
     app.setApplicationName("LSLViewer")
+
+    # Attempt to set a Windows .ico application icon (no-op if unavailable)
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+        ico_path = repo_root / "icons" / "stream_viewer icon_no_bg2.ico"
+        if ico_path.exists():
+            app.setWindowIcon(QIcon(str(ico_path)))
+    except Exception:
+        pass
+
     window = LSLViewer(**args.__dict__)
+    # Ensure the main window adopts the application icon
+    try:
+        window.setWindowIcon(app.windowIcon())
+    except Exception:
+        pass
     window.show()
 
     if False:
