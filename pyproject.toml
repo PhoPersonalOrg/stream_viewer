@@ -41,6 +41,13 @@ lsl_status = "stream_viewer.applications.stream_status_qml:main"
 lsl_switching_viewer = "stream_viewer.applications.lsl_switching:main"
 lsl_viewer_custom = "stream_viewer.applications.lsl_custom:main"
 
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["stream_viewer*"]
+exclude = ["icons*", "docs*", "dist*"]
+
 [dependency-groups]
 dev = [
     "mkdocs>=1.6.1",
