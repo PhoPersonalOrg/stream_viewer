@@ -227,7 +227,12 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                     # No data to process for this source
                     continue
                 else:
-                    x = np.nanmean(buff_data, axis=0)
+                    # Compute mean across channels while tolerating all-NaN columns
+                    with np.errstate(invalid='ignore', divide='ignore'):
+                        x = np.nanmean(buff_data, axis=0)
+                    # If no finite values are present, skip this update to preserve last frame
+                    if not np.isfinite(x).any():
+                        continue
                     x = np.nan_to_num(x, nan=0.0)
 
                 # Need a valid sampling rate
