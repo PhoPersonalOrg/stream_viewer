@@ -10,3 +10,11 @@ markdown_extensions:
 plugins:
   - search
   - mkdocstrings
+nav:
+  - Home: README.md
+  - Modules:
+    - Renderers:
+      - Overview: modules/renderers/overview.md
+      - Architecture: modules/renderers/architecture.md
+      - Development Guide: modules/renderers/development-guide.md
+      - Annotated Examples: modules/renderers/annotated-examples.md
