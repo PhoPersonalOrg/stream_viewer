@@ -346,6 +346,51 @@ class RendererBufferData(RendererFormatData):
 
         return collect_data, collect_timestamps
 
+    @QtCore.Slot()
+    def auto_scale_once(self) -> None:
+        """
+        Perform a one-time autoscale of the renderer axis based on the
+        current contents of the internal buffers.
+
+        This computes a global min/max across all buffered, visible
+        channels and updates ``lower_limit``/``upper_limit`` once,
+        without changing the continuous ``auto_scale`` mode or
+        modifying the buffered data.
+        """
+        if not self._buffers:
+            return
+
+        global_min = None
+        global_max = None
+
+        for buf in self._buffers:
+            data = getattr(buf, "_data", None)
+            if data is None or not data.size:
+                continue
+
+            try:
+                _min = float(np.nanmin(data))
+                _max = float(np.nanmax(data))
+            except ValueError:
+                # All-NaN slice or similar; skip this buffer.
+                continue
+
+            if not np.isfinite(_min) or not np.isfinite(_max):
+                continue
+
+            global_min = _min if global_min is None else min(global_min, _min)
+            global_max = _max if global_max is None else max(global_max, _max)
+
+        if global_min is None or global_max is None:
+            return
+
+        # Avoid degenerate ranges.
+        if global_max <= global_min + np.finfo(np.float32).eps:
+            return
+
+        self.lower_limit = global_min
+        self.upper_limit = global_max
+
     @property
     def duration(self):
         return self._duration

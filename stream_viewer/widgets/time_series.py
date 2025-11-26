@@ -41,12 +41,17 @@ class TimeSeriesControl(IControlPanel):
         _combo.setVisible(False)
         self.layout().addWidget(_combo, row_ix, 1, 1, 1)
 
-        # Auto-Scale ComboBox
+        # Auto-Scale ComboBox + one-shot tool button
         row_ix += 1
         self.layout().addWidget(QtWidgets.QLabel("AutoScale"), row_ix, 0, 1, 1)
         _combo = QtWidgets.QComboBox()
         _combo.setObjectName("AutoScale_ComboBox")
         self.layout().addWidget(_combo, row_ix, 1, 1, 1)
+
+        _tool_button = QtWidgets.QToolButton()
+        _tool_button.setObjectName("AutoScaleOnce_ToolButton")
+        _tool_button.setText("Once")
+        self.layout().addWidget(_tool_button, row_ix, 2, 1, 1)
 
         # marker_scale spinbox
         row_ix += 1
@@ -105,6 +110,20 @@ class TimeSeriesControl(IControlPanel):
         _combo.addItems(renderer.autoscale_modes)
         _combo.setCurrentText(renderer.auto_scale)
         _combo.currentTextChanged.connect(renderer.auto_scale_currentTextChanged)
+
+        # One-shot AutoScale tool button
+        _tool_button = self.findChild(QtWidgets.QToolButton, name="AutoScaleOnce_ToolButton")
+        if _tool_button is not None:
+            try:
+                _tool_button.clicked.disconnect()
+            except TypeError:
+                pass
+            # Enable the button only when some AutoScale mode other than "None" is selected.
+            try:
+                _tool_button.setEnabled(renderer.auto_scale.lower() != "none")
+            except AttributeError:
+                _tool_button.setEnabled(False)
+            _tool_button.clicked.connect(renderer.auto_scale_once)
 
         # marker_scale spinbox
         _spinbox = self.findChild(QtWidgets.QDoubleSpinBox, name="MarkerScale_SpinBox")

@@ -26,14 +26,27 @@ class LinePowerControlPanel(TimeSeriesControl):
             "FontSize_SpinBox",
             "Colors_ComboBox",
             "HP_SpinBox",
-            # "LL_SpinBox", "UL_SpinBox",
-            # "Background_ComboBox",
-
         }
 
+        layout = self.layout()
         for object_name in disabled_widgets:
             widget = self.findChild(QtWidgets.QWidget, object_name)
-            if widget is not None:
-                widget.setVisible(False)
+            if widget is None:
+                continue
+
+            # Hide the control itself
+            widget.setVisible(False)
+
+            # Also hide the label in the same row (column 0 in the grid)
+            try:
+                idx = layout.indexOf(widget)
+                if idx != -1:
+                    row, col, row_span, col_span = layout.getItemPosition(idx)
+                    label_item = layout.itemAtPosition(row, 0)
+                    if label_item is not None and label_item.widget() is not None:
+                        label_item.widget().setVisible(False)
+            except Exception:
+                # Best-effort; if layout lookup fails, just leave the hidden control.
+                pass
 
 
