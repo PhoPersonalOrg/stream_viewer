@@ -5,3 +5,5 @@ from stream_viewer.widgets.status_delegate import StatusDelegate
 from stream_viewer.widgets.stream_info import StreamInfoListView, StreamStatusQMLWidget
 from stream_viewer.widgets.bar_ctrl import BarControlPanel
 from stream_viewer.widgets.time_series import TimeSeriesControl
+from stream_viewer.widgets.sonify_ctrl import SonifyControlPanel
+from stream_viewer.widgets.line_power_ctrl import LinePowerControlPanel
