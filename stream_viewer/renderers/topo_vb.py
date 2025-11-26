@@ -178,6 +178,15 @@ class TopoVB(RendererMergeDataSources, VisbrainRenderer):
             return
         super().reset_renderer(**kwargs)
 
+        # If the base VisbrainRenderer couldn't build an object (e.g. because
+        # there were no valid positions or channel labels), bail out early.
+        if self._obj is None:
+            logger.warning(
+                "TopoVB.reset_renderer: underlying visbrain object is None; "
+                "skipping grid preparation and disc setup for this reset."
+            )
+            return
+
         # Disable interpolation paths that rely on SciPy interp2d
         if hasattr(self._obj, '_interp'):
             self._obj._interp = None
@@ -195,6 +204,13 @@ class TopoVB(RendererMergeDataSources, VisbrainRenderer):
             self._obj.disc.set_data(grid_color)
 
     def _prepare_grid(self):
+        # Guard against cases where _build_obj failed and did not set self._obj.
+        if self._obj is None or not hasattr(self._obj, "_xyz"):
+            logger.warning(
+                "TopoVB._prepare_grid: self._obj is not fully initialized; "
+                "skipping grid computation."
+            )
+            return
 
         x, y = self._obj._xyz[:, 0], self._obj._xyz[:, 1]
         xi = np.linspace(x.min(), x.max(), self._obj._pix)

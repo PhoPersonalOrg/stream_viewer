@@ -17,9 +17,6 @@ from qtpy import QtGui
 import pyqtgraph as pg
 from stream_viewer.renderers.data.base import RendererDataTimeSeries
 from stream_viewer.renderers.display.pyqtgraph import PGRenderer
-# stream_viewer/widgets/line_power_ctrl.py
-from qtpy import QtWidgets
-from stream_viewer.widgets.time_series import TimeSeriesControl
 
 
 # Standard EEG frequency bands
@@ -37,32 +34,6 @@ BAND_COLORS = [
     (0, 127, 255),    # Beta - dodger blue
     (0, 63, 255),     # Gamma - blue
 ]
-
-
-class LinePowerControlPanel(TimeSeriesControl):
-    def __init__(self, renderer, name="LinePowerControlPanelWidget", **kwargs):
-        super().__init__(renderer, name=name, **kwargs)
-
-    def reset_widgets(self, renderer):
-        super().reset_widgets(renderer)
-
-        # _disabled_widgets = ['marker_scale', '']
-        _disabled_widgets = {
-                # 'Chans_TreeWidget':'Chans_TreeWidget',
-                'ShowNames_CheckBox':'ShowNames_CheckBox',
-                'MarkerScale':'MarkerScale_SpinBox', 'FontSize':'FontSize_SpinBox',
-                }
-        
-        for a_key, a_ctrl_name in _disabled_widgets.items():
-            a_ctrl = self.findChild(QtWidgets.QWidget, a_ctrl_name)
-            if a_ctrl is not None:
-                a_ctrl.setVisible(False)      # or checkbox.setEnabled(False)
-
-
-        # # Hide or disable "Show Names" for this renderer
-        # checkbox = self.findChild(QtWidgets.QCheckBox, "ShowNames_CheckBox")
-        # if checkbox is not None:
-        #     checkbox.setVisible(False)      # or checkbox.setEnabled(False)
 
 
 class LinePowerVis(RendererDataTimeSeries, PGRenderer):

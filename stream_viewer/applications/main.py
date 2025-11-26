@@ -4,6 +4,7 @@ import json
 import sys
 import functools
 import argparse
+import logging
 from pathlib import Path
 from qtpy import QtWidgets, QtCore
 from qtpy.QtGui import QIcon
@@ -15,6 +16,9 @@ from stream_viewer.widgets import load_widget
 from stream_viewer.widgets import ConfigAndRenderWidget
 from stream_viewer.widgets import StreamStatusQMLWidget
 from stream_viewer.renderers import load_renderer, list_renderers, get_kwargs_from_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class LSLViewer(QtWidgets.QMainWindow):
@@ -124,57 +128,182 @@ class LSLViewer(QtWidgets.QMainWindow):
     def restoreOnStartup(self):
         # The start counterpart to closeEvent
         settings = QtCore.QSettings(str(self._settings_path), QtCore.QSettings.IniFormat)
-        settings.beginGroup("MainWindow")
-        self.resize(settings.value("size", QtCore.QSize(800, 600)))
-        self.move(settings.value("pos", QtCore.QPoint(200, 200)))
-        if settings.value("fullScreen", 'false') == 'true':
-            self.showFullScreen()
-        elif settings.value("maximized", 'false') == 'true':
-            self.showMaximized()
-        settings.endGroup()
 
-        # Load extra PluginFolders to search for plugins
-        settings.beginGroup("PluginFolders")
-        for plugin_group in settings.childGroups():
-            settings.beginGroup(plugin_group)
-            if plugin_group not in self._plugin_dirs:
-                self._plugin_dirs[plugin_group] = []
-            for str_ix in settings.childKeys():
-                self._plugin_dirs[plugin_group].append(settings.value(str_ix))
-            settings.endGroup()  # renderers, widgets, etc
-        settings.endGroup()  # PluginFolders
+        # ---- Main window geometry ----
+        try:
+            settings.beginGroup("MainWindow")
+            self.resize(settings.value("size", QtCore.QSize(800, 600)))
+            self.move(settings.value("pos", QtCore.QPoint(200, 200)))
+            if settings.value("fullScreen", 'false') == 'true':
+                self.showFullScreen()
+            elif settings.value("maximized", 'false') == 'true':
+                self.showMaximized()
+        except Exception as exc:
+            logger.warning("Failed to restore main window geometry: %s", exc)
+        finally:
+            settings.endGroup()
 
-        # Configure the StreamStatus Panel
-        settings.beginGroup("StreamStatus")
-        if settings.value("floating", 'false') == 'true':
-            status_dock = self.findChild(QtWidgets.QDockWidget, name="StatusPanel")
-            status_dock.setFloating(True)
-            status_dock.resize(settings.value("size"))
-            status_dock.move(settings.value("pos"))
-        settings.endGroup()
+        # ---- PluginFolders: extra plugin search dirs ----
+        try:
+            settings.beginGroup("PluginFolders")
+            for plugin_group in settings.childGroups():
+                try:
+                    settings.beginGroup(plugin_group)
+                    if plugin_group not in self._plugin_dirs:
+                        self._plugin_dirs[plugin_group] = []
+                    for str_ix in settings.childKeys():
+                        val = settings.value(str_ix)
+                        if val is not None and val not in self._plugin_dirs[plugin_group]:
+                            self._plugin_dirs[plugin_group].append(val)
+                except Exception as exc:
+                    logger.warning("Failed to restore plugin folder group '%s': %s", plugin_group, exc)
+                finally:
+                    settings.endGroup()  # renderers, widgets, etc
+        except Exception as exc:
+            logger.warning("Failed to restore PluginFolders: %s", exc)
+        finally:
+            settings.endGroup()  # PluginFolders
 
-        # Initialize pre-configured renderers (i.e., re-open those that were open during last close).
-        settings.beginGroup("RendererDocksMain")
-        dock_groups = settings.childGroups()
-        settings.endGroup()
+        # ---- StreamStatus panel geometry ----
+        try:
+            settings.beginGroup("StreamStatus")
+            if settings.value("floating", 'false') == 'true':
+                status_dock = self.findChild(QtWidgets.QDockWidget, name="StatusPanel")
+                if status_dock is not None:
+                    status_dock.setFloating(True)
+                    size = settings.value("size")
+                    pos = settings.value("pos")
+                    if size is not None:
+                        status_dock.resize(size)
+                    if pos is not None:
+                        status_dock.move(pos)
+        except Exception as exc:
+            logger.warning("Failed to restore StreamStatus dock: %s", exc)
+        finally:
+            settings.endGroup()
+
+        # ---- Restore renderer docks / layouts ----
+        try:
+            settings.beginGroup("RendererDocksMain")
+            dock_groups = settings.childGroups()
+        except Exception as exc:
+            logger.warning("Failed to read RendererDocksMain from settings: %s", exc)
+            dock_groups = []
+        finally:
+            settings.endGroup()
+
         for dock_name in dock_groups:
-            settings.beginGroup(dock_name)
-            settings.beginGroup("data_sources")
-            data_sources = []
-            for ds_id in settings.childGroups():
-                settings.beginGroup(ds_id)
-                src_cls = getattr(stream_viewer.data, settings.value("class"))
-                src_key = settings.value("identifier")
-                if issubclass(src_cls, LSLDataSource):
-                    data_sources.append(src_cls(json.loads(src_key)))
-                # TODO: other src_cls
-                settings.endGroup()
-            settings.endGroup()
-            rend_name = dock_name.split("|")[0]
-            rend_cls = load_renderer(rend_name, extra_search_dirs=self._plugin_dirs['renderers'])
-            rend_kwargs = get_kwargs_from_settings(settings, rend_cls)
-            settings.endGroup()
-            self.on_stream_activated(data_sources, renderer_name=rend_name, renderer_kwargs=rend_kwargs)
+            try:
+                settings.beginGroup(dock_name)
+
+                # Build data sources
+                data_sources = []
+                try:
+                    settings.beginGroup("data_sources")
+                    for ds_id in settings.childGroups():
+                        try:
+                            settings.beginGroup(ds_id)
+                            cls_name = settings.value("class")
+                            src_key = settings.value("identifier")
+                            if not cls_name or not src_key:
+                                continue
+
+                            src_cls = getattr(stream_viewer.data, cls_name, None)
+                            if src_cls is None:
+                                logger.warning(
+                                    "Unknown data source class '%s' for dock '%s'; skipping source '%s'",
+                                    cls_name, dock_name, ds_id,
+                                )
+                                continue
+
+                            if issubclass(src_cls, LSLDataSource):
+                                try:
+                                    ident = json.loads(src_key)
+                                except Exception as exc:
+                                    logger.warning(
+                                        "Failed to decode identifier for source '%s' in dock '%s': %s",
+                                        ds_id, dock_name, exc,
+                                    )
+                                    continue
+                                try:
+                                    data_sources.append(src_cls(ident))
+                                except Exception as exc:
+                                    logger.warning(
+                                        "Failed to construct LSLDataSource for '%s' in dock '%s': %s",
+                                        ds_id, dock_name, exc,
+                                    )
+                            # TODO: handle other src_cls types if/when added
+                        except Exception as exc:
+                            logger.warning(
+                                "Error while restoring data source '%s' for dock '%s': %s",
+                                ds_id, dock_name, exc,
+                            )
+                        finally:
+                            settings.endGroup()  # ds_id
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to restore data_sources for dock '%s': %s",
+                        dock_name, exc,
+                    )
+                finally:
+                    settings.endGroup()  # data_sources
+
+                # If there are no valid sources, skip this dock
+                if not data_sources:
+                    logger.warning(
+                        "No valid data_sources restored for dock '%s'; skipping renderer activation",
+                        dock_name,
+                    )
+                    settings.endGroup()  # dock_name
+                    continue
+
+                # Renderer name / class
+                rend_name = dock_name.split("|")[0]
+                try:
+                    rend_cls = load_renderer(
+                        rend_name,
+                        extra_search_dirs=self._plugin_dirs.get('renderers', []),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load renderer '%s' for dock '%s': %s",
+                        rend_name, dock_name, exc,
+                    )
+                    settings.endGroup()
+                    continue
+
+                # Renderer kwargs from settings
+                try:
+                    rend_kwargs = get_kwargs_from_settings(settings, rend_cls)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to read renderer settings for '%s' in dock '%s': %s",
+                        rend_name, dock_name, exc,
+                    )
+                    rend_kwargs = {}
+
+                settings.endGroup()  # dock_name
+
+                # Activate renderer dock; failures here should not abort startup
+                try:
+                    self.on_stream_activated(
+                        data_sources,
+                        renderer_name=rend_name,
+                        renderer_kwargs=rend_kwargs,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to activate renderer '%s' from dock '%s': %s",
+                        rend_name, dock_name, exc,
+                    )
+
+            except Exception as exc:
+                # Catch any unexpected error for this dock and move on
+                logger.warning("Unexpected error while restoring dock '%s': %s", dock_name, exc)
+                try:
+                    settings.endGroup()
+                except Exception:
+                    pass
 
     def closeEvent(self, event):
         self.saveSettings()

@@ -7,7 +7,10 @@ from vispy import app
 import matplotlib.pyplot as plt
 from visbrain.objects import ColorbarObj, SceneObj
 from stream_viewer.renderers.display.base import RendererBaseDisplay
+import logging
 
+
+logger = logging.getLogger(__name__)
 
 class VisbrainRenderer(RendererBaseDisplay):
 
@@ -93,6 +96,13 @@ class VisbrainRenderer(RendererBaseDisplay):
         # Reset the brain mesh
         if self._obj is None or self._destroy_obj:
             self._build_obj()  # Creates self._obj
+            # If _build_obj failed (e.g. no valid chan positions), bail out gracefully.
+            if self._obj is None:
+                logger.warning(
+                    "VisbrainRenderer.reset_renderer: _build_obj did not create an object; "
+                    "skipping scene setup for this reset."
+                )
+                return
             self.sc.add_to_subplot(self._obj, row=0, col=0, use_this_cam=use_this_cam,
                                    rotate=None if use_this_cam else self.rotate)
 
