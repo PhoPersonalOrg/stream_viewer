@@ -4,7 +4,7 @@
 			"path": "."
 		},
 		{
-			"path": "../PhoOfflineEEGAnalysis"
+			"path": "../vispy_timeline"
 		}
 	],
 	"settings": {}
