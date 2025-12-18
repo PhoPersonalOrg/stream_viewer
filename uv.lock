@@ -308,6 +308,21 @@ wheels = [
 ]
 
 [[package]]
+name = "dearpygui"
+version = "2.1.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b4/09/c23ce6671e2339f4170620b5626bc80070611f6b8f1c6c000dfa1936062f/dearpygui-2.1.1-cp310-cp310-macosx_10_6_x86_64.whl", hash = "sha256:4cb99ac64125c4b454eb79c52c37c92e64d8dcd1646d14bb23e061930124f090", size = 2101049, upload-time = "2025-11-14T14:47:37.127Z" },
+    { url = "https://files.pythonhosted.org/packages/63/cc/e99f0d8a9ae3f85febd3dc29c68c38af714c7ab232469beee2ca8f5ee1f1/dearpygui-2.1.1-cp310-cp310-macosx_13_0_arm64.whl", hash = "sha256:fa3b3f2617d01b3de93bc4632129d5155d34aba708c72df05af1eaf0369a6394", size = 1895437, upload-time = "2025-11-14T14:47:46Z" },
+    { url = "https://files.pythonhosted.org/packages/96/48/245cb4b280d8b146dfb0cfe57a93cbd52ff5fea1ae634b676c46281d1596/dearpygui-2.1.1-cp310-cp310-manylinux1_x86_64.whl", hash = "sha256:886e3b4f91f9e75de0aa1fd5a51ea1cd862f047fbb1edd5bdcbec3d29c66f5cb", size = 2640351, upload-time = "2025-11-14T14:47:52.055Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/ba/169f29ceec2a404e66577a0ed408785a7cf2e75748205f80d24c48dc5ad5/dearpygui-2.1.1-cp310-cp310-win_amd64.whl", hash = "sha256:5bf454047f7dc7c77c98721fd98aaaf276fa82f954699c95dfe80916a7060136", size = 1808682, upload-time = "2025-11-14T14:47:23.635Z" },
+    { url = "https://files.pythonhosted.org/packages/57/b5/d5bae262633d05f82aeeb3f84ae6240fe3f2955ab6fb4509ebf8048a0b9e/dearpygui-2.1.1-cp311-cp311-macosx_10_6_x86_64.whl", hash = "sha256:8a7c8608b365f4b380b7326679023595fecd04b78c514f2cfd349b0a1108bd0e", size = 2100934, upload-time = "2025-11-14T14:47:38.172Z" },
+    { url = "https://files.pythonhosted.org/packages/93/86/75fa9a0f0a7b4b62810cc6f1e8ebaea3df0a825c0adf27d2024aaac2d178/dearpygui-2.1.1-cp311-cp311-macosx_13_0_arm64.whl", hash = "sha256:ee87153fdd494ccead8c2345553acd7a9ee61c031e3223f4160aa560709248a3", size = 1895473, upload-time = "2025-11-14T14:47:47.064Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/7a/e109e06f8f4379d41a4e672c49aba42e7fcf0eec88056fa06185f4e52c98/dearpygui-2.1.1-cp311-cp311-manylinux1_x86_64.whl", hash = "sha256:964fbb3735017b919efa58104b2d7e9b84a168ff5c1031ae0652d5bc0a48bf5b", size = 2640408, upload-time = "2025-11-14T14:47:53.124Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/b5/2ec29d9b47c30ecee96c6f6a0cf229f2898ce3e133a1a0e5b0cd5db82e6b/dearpygui-2.1.1-cp311-cp311-win_amd64.whl", hash = "sha256:6141184ff59fa4b8df1b81b077cb8cc2b2ef9c0ff92e69c6063062b6d251f426", size = 1808736, upload-time = "2025-11-14T14:47:26.46Z" },
+]
+
+[[package]]
 name = "debugpy"
 version = "1.8.19"
 source = { registry = "https://pypi.org/simple" }
@@ -1967,6 +1982,7 @@ name = "stream-viewer"
 version = "0.30.0"
 source = { editable = "." }
 dependencies = [
+    { name = "dearpygui" },
     { name = "eegsynth" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
@@ -2007,6 +2023,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "dearpygui", specifier = ">=2.1.1" },
     { name = "eegsynth", specifier = ">=0.8.0" },
     { name = "ipykernel", specifier = ">=7.1.0" },
     { name = "ipywidgets", specifier = ">=8.1.8" },
