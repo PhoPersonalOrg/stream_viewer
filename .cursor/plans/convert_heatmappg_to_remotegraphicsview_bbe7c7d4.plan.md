@@ -159,4 +159,3 @@ from pyqtgraph.widgets.RemoteGraphicsView import RemoteGraphicsView
 - Confirm x-axis linking works across remote plots
 - Test marker rendering in remote process
 - Validate performance improvement from background rendering
-- Ensure proper cleanup when renderer is destroyed
