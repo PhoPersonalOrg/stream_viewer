@@ -4,8 +4,9 @@ import json
 import logging
 import warnings
 import numpy as np
-from qtpy import QtGui
+from qtpy import QtGui, QtWidgets
 import pyqtgraph as pg
+from pyqtgraph.widgets.RemoteGraphicsView import RemoteGraphicsView
 from scipy import signal
 from typing import Optional, Tuple, TYPE_CHECKING
 
@@ -123,7 +124,11 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         self._nperseg = int(nperseg)
         self._noverlap = int(noverlap)
 
-        self._widget = pg.GraphicsLayoutWidget()
+        # Container widget with vertical layout for RemoteGraphicsView instances
+        self._widget = QtWidgets.QWidget()
+        self._widget.setLayout(QtWidgets.QVBoxLayout())
+        self._remote_views: list[Optional[RemoteGraphicsView]] = []  # Store RemoteGraphicsView instances (None for skipped sources)
+        self._plot_items: list = []  # Store remote plot items for x-axis linking (None for skipped sources)
         self._do_yaxis_sync = False
         self._src_last_marker_time = []
         self._marker_texts_pool = deque()
@@ -159,10 +164,17 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         self._reset_timer.stop()
         self._pending_reset = {'reset_channel_labels': False}
         
-        self._widget.clear()
-        self._widget.setBackground(self.parse_color_str(self.bg_color))
+        # Clear container layout - remove all RemoteGraphicsView widgets
+        layout = self._widget.layout()
+        while layout.count():
+            child = layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        
+        # Clear storage - will be reinitialized below to match data_sources indices
         self._src_last_marker_time = [-np.inf for _ in range(len(self._data_sources))]
-        self._image_items = []
+        n_sources = len(self._data_sources)
+        self._image_items = [None] * n_sources
         # Initialize source states
         n_sources = len(self._data_sources)
         while len(self._source_states) < n_sources:
@@ -186,6 +198,13 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
 
         row_offset = -1
         last_row = 0
+        bottom_plot_item = None
+        
+        # Initialize plot_items list to match data_sources indices (None for skipped sources)
+        n_sources = len(self._data_sources)
+        self._plot_items = [None] * n_sources
+        self._remote_views = [None] * n_sources
+        
         for src_ix, src in enumerate(self._data_sources):
             ch_states = self.chan_states[self.chan_states['src'] == src.identifier]
             n_vis_src = ch_states['vis'].sum()
@@ -193,11 +212,37 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                 continue
 
             row_offset += 1
-            pw = self._widget.addPlot(row=row_offset, col=0, antialias=True)
             last_row = row_offset
+            
+            # Create RemoteGraphicsView for this data source
+            remote_view = RemoteGraphicsView(debug=False)
+            # Enable antialiasing in remote process (doesn't affect main process performance)
+            remote_view.pg.setConfigOptions(antialias=True)  # type: ignore
+            
+            # Create plot item in remote process
+            pw = remote_view.pg.PlotItem()  # type: ignore
+            # Performance: Apply deferGetattr to speed up access
+            pw._setProxyOptions(deferGetattr=True)
+            # Set background on the view widget using Qt palette (RemoteGraphicsView is in main process)
+            bg_color_str = self.parse_color_str(self.bg_color)
+            bg_qcolor = pg.mkColor(bg_color_str)
+            palette = remote_view.palette()
+            palette.setColor(remote_view.backgroundRole(), bg_qcolor)
+            remote_view.setPalette(palette)
+            remote_view.setAutoFillBackground(True)
+            remote_view.setCentralItem(pw)
+            
+            # Store references at source index (not row_offset)
+            self._remote_views[src_ix] = remote_view
+            self._plot_items[src_ix] = pw
+            
+            # Add to container layout
+            layout.addWidget(remote_view)
+            
             pw.showGrid(x=True, y=True, alpha=0.3)
 
-            font = QtGui.QFont()
+            # Create font in remote process to avoid QGuiApplication warnings
+            font = remote_view.pg.QtGui.QFont()  # type: ignore
             font.setPointSize(self.font_size - 2)
             pw.setXRange(0, self.duration)
             pw.getAxis("bottom").setTickFont(font)
@@ -212,26 +257,32 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             if self.ylabel_as_title:
                 pw.getAxis("top").setStyle(showValues=False)
 
-            # Create the image item for spectrogram; attach color LUT later on first update
-            img = pg.ImageItem(axisOrder='row-major')
+            # Create the image item for spectrogram in remote process; attach color LUT later on first update
+            img = remote_view.pg.ImageItem(axisOrder='row-major')  # type: ignore
             pw.addItem(img)
-            self._image_items.append(img)
+            self._image_items[src_ix] = img
 
             # Y axis range (frequency)
             pw.setYRange(self._fmin_hz, self._fmax_hz)
 
-        # Bottom axis label and link x-axes
-        bottom_pw = self._widget.getItem(last_row, 0)
-        if bottom_pw is not None:
-            bottom_pw.setLabel('bottom', 'Time', units='s', **labelStyle)
-            bottom_pw.getAxis("bottom").setStyle(showValues=True)
-            for row_ix in range(last_row):
-                pw = self._widget.getItem(row_ix, 0)
-                if pw is None:
-                    break
-                pw.setXLink(bottom_pw)
+        # Bottom axis label and link x-axes manually
+        # Find the last non-None plot item (bottom one)
+        bottom_plot_item = None
+        for plot_item in reversed(self._plot_items):
+            if plot_item is not None:
+                bottom_plot_item = plot_item
+                break
+        
+        if bottom_plot_item is not None:
+            bottom_plot_item.setLabel('bottom', 'Time', units='s', **labelStyle)
+            bottom_plot_item.getAxis("bottom").setStyle(showValues=True)
+            # Link all plots to bottom plot
+            for plot_item in self._plot_items:
+                if plot_item is not None and plot_item is not bottom_plot_item:
+                    plot_item.setXLink(bottom_plot_item)
 
-        self._widget.ci.setSpacing(10. if self.ylabel_as_title else 0.)
+        # Set layout spacing
+        layout.setSpacing(int(10. if self.ylabel_as_title else 0.))
         self._do_yaxis_sync = True
 
     def _schedule_reset(self, reset_channel_labels: bool = False) -> None:
@@ -319,17 +370,15 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     def sync_y_axes(self) -> None:
         """Synchronize y-axis widths across all plots."""
         max_width = self._ylabel_width or 0.
-        for src_ix in range(len(self._data_sources)):
-            pw = self._widget.getItem(src_ix, 0)
+        for pw in self._plot_items:
             if pw is None:
-                break
+                continue
             yax = pw.getAxis('left')
             max_width = max(max_width, yax.minimumWidth())
 
-        for src_ix in range(len(self._data_sources)):
-            pw = self._widget.getItem(src_ix, 0)
+        for pw in self._plot_items:
             if pw is None:
-                break
+                continue
             pw.getAxis('left').setWidth(max_width)
         self._do_yaxis_sync = False
 
@@ -573,10 +622,16 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         
         Args:
             src_ix: Source index
-            pw: Plot widget
+            pw: Plot widget (unused, kept for compatibility)
             mrk: Marker array
             mrk_ts: Marker timestamps
         """
+        # Get plot item and remote view for this source
+        if src_ix >= len(self._plot_items) or src_ix >= len(self._remote_views):
+            return
+        pw = self._plot_items[src_ix]
+        remote_view = self._remote_views[src_ix]
+        
         # Update expiry threshold
         if not self._buffers[src_ix]._tvec.size:
             return
@@ -587,10 +642,23 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             self._t_expired = max(lead_t - self._duration, self._t_expired)
 
         # Remove expired markers
-        if pw.items and isinstance(pw.items[-1], pg.TextItem):
+        # Note: pw.items works via proxy, but isinstance check may need to be done differently
+        # We'll check if there are items and remove expired ones
+        try:
+            items = pw.items
+            if items and len(items) > 0:
+                while (len(self._marker_info) > 0) and (self._marker_info[0].timestamp < self._t_expired):
+                    pop_info = self._marker_info.popleft()
+                    pw.removeItem(pop_info[2])
+                    self._marker_texts_pool.append(pop_info[2])
+        except Exception:
+            # If items access fails, try to remove based on marker_info
             while (len(self._marker_info) > 0) and (self._marker_info[0].timestamp < self._t_expired):
                 pop_info = self._marker_info.popleft()
-                pw.removeItem(pop_info[2])
+                try:
+                    pw.removeItem(pop_info[2])
+                except Exception:
+                    pass
                 self._marker_texts_pool.append(pop_info[2])
 
         # Add new markers
@@ -601,8 +669,10 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                     text = self._marker_texts_pool.popleft()
                     text.setText(_m)
                 else:
-                    text = pg.TextItem(text=_m, angle=90)
-                    font = QtGui.QFont()
+                    # Create TextItem in remote process
+                    text = remote_view.pg.TextItem(text=_m, angle=90)  # type: ignore
+                    # Create font in remote process to avoid QGuiApplication warnings
+                    font = remote_view.pg.QtGui.QFont()  # type: ignore
                     font.setPointSize(int(self.font_size + 2.0))
                     text.setFont(font)
 
@@ -629,7 +699,10 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         lut = self._get_colormap_lut()
 
         for src_ix in range(len(data)):
-            pw = self._widget.getItem(src_ix, 0)
+            # Get plot item from remote plot items list
+            if src_ix >= len(self._plot_items):
+                continue
+            pw = self._plot_items[src_ix]
             if pw is None:
                 continue
 
@@ -714,15 +787,17 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                     # Update x-axis range
                     pw.setXRange(time_start, time_start + time_width)
                     
-                    # Update image
-                    img = self._image_items[src_ix]
-                    img.setImage(display, levels=levels, autoLevels=False)
-                    img.setLookupTable(lut)
-                    img.setRect(pg.QtCore.QRectF(
-                        time_start, float(self._fmin_hz),
-                        time_width,
-                        float(self._fmax_hz - self._fmin_hz)
-                    ))
+                    # Update image with performance optimization: use _callSync='off' for operations that don't need return values
+                    if src_ix < len(self._image_items):
+                        img = self._image_items[src_ix]
+                        if img is not None:
+                            img.setImage(display, levels=levels, autoLevels=False, _callSync='off')
+                            img.setLookupTable(lut, _callSync='off')
+                            img.setRect(pg.QtCore.QRectF(
+                                time_start, float(self._fmin_hz),
+                                time_width,
+                                float(self._fmax_hz - self._fmin_hz)
+                            ), _callSync='off')
 
             # Update markers
             self._update_markers(src_ix, pw, mrk, mrk_ts)
@@ -765,9 +840,8 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     def fmin_hz(self, value):
         self._fmin_hz = float(value)
         # Update Y-axis range in-place if plots exist
-        if self._image_items:
-            for src_ix in range(len(self._image_items)):
-                pw = self._widget.getItem(src_ix, 0)
+        if self._plot_items:
+            for pw in self._plot_items:
                 if pw is not None:
                     pw.setYRange(self._fmin_hz, self._fmax_hz)
             # Invalidate frequency mask - will recompute on next update
@@ -785,9 +859,8 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     def fmax_hz(self, value):
         self._fmax_hz = float(value)
         # Update Y-axis range in-place if plots exist
-        if self._image_items:
-            for src_ix in range(len(self._image_items)):
-                pw = self._widget.getItem(src_ix, 0)
+        if self._plot_items:
+            for pw in self._plot_items:
                 if pw is not None:
                     pw.setYRange(self._fmin_hz, self._fmax_hz)
             # Invalidate frequency mask - will recompute on next update
