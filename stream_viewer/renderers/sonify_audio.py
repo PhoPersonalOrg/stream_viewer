@@ -341,22 +341,45 @@ class SonifyAudio(RendererBufferData, AudioRenderer):
         Returns:
             Array of frequencies in Hz.
         """
+        # Validate and sanitize input values
+        if values.size == 0:
+            return np.array([self._base_freq])
+        
+        # Replace NaN and inf with 0.5 (middle of range)
+        values = np.where(np.isfinite(values), values, 0.5)
+        # Clip to valid range [0, 1]
+        values = np.clip(values, 0.0, 1.0)
+        
         if self._note_quantize:
             # Map to MIDI notes and convert to frequency
             note_range = self._max_note - self._min_note
             notes = self._min_note + values * note_range
             notes = np.round(notes).astype(int)
+            # Clip notes to valid MIDI range (0-127) to prevent overflow
+            notes = np.clip(notes, 0, 127)
             # MIDI to frequency: f = 440 * 2^((n-69)/12)
-            freqs = 440.0 * (2.0 ** ((notes - 69) / 12.0))
+            # Use safe power calculation to prevent overflow
+            with np.errstate(over='ignore', invalid='ignore'):
+                freqs = 440.0 * (2.0 ** ((notes - 69) / 12.0))
+                # Replace any invalid frequencies with base frequency
+                freqs = np.where(np.isfinite(freqs), freqs, self._base_freq)
+                # Clip to reasonable frequency range (20 Hz - 20 kHz)
+                freqs = np.clip(freqs, 20.0, 20000.0)
         else:
             # Linear frequency mapping
             freqs = self._base_freq + values * self._freq_range
+            # Ensure frequencies are finite and in valid range
+            freqs = np.where(np.isfinite(freqs), freqs, self._base_freq)
+            freqs = np.clip(freqs, 20.0, 20000.0)
         
         # Add per-channel offset for polyphonic mode
         if self._pitch_per_channel and n_channels > 1:
             # Spread channels across an octave
             octave_spread = np.linspace(0, 1, n_channels)
-            freqs = freqs * (2.0 ** (octave_spread * 0.5))  # Half octave spread
+            with np.errstate(over='ignore', invalid='ignore'):
+                freqs = freqs * (2.0 ** (octave_spread * 0.5))  # Half octave spread
+                freqs = np.where(np.isfinite(freqs), freqs, self._base_freq)
+                freqs = np.clip(freqs, 20.0, 20000.0)
         
         return freqs
 
@@ -400,20 +423,28 @@ class SonifyAudio(RendererBufferData, AudioRenderer):
             features = combined_data[:, -1]
             # Normalize assuming data is already scaled to 0-1 by auto_scale
             features = np.clip(features + 0.5, 0, 1)  # Shift from [-0.5, 0.5] to [0, 1]
+            # Ensure finite values
+            features = np.where(np.isfinite(features), features, 0.5)
             amps = np.ones(n_channels) * 0.5
             
         elif self._mapping_mode in self.FREQ_BANDS:
             # Band power mapping
             features = self._extract_band_power(combined_data, self._mapping_mode, avg_srate)
             # Normalize with log scaling for better perceptual range
-            features = np.log1p(features * 1000) / np.log1p(1000)
+            # Use safe log1p to handle negative or very large values
+            with np.errstate(invalid='ignore', divide='ignore'):
+                features = np.log1p(np.maximum(features * 1000, 0)) / np.log1p(1000)
+            features = np.where(np.isfinite(features), features, 0.5)
             features = np.clip(features, 0, 1)
             amps = features * 0.8 + 0.1  # Scale amplitude by power
+            amps = np.where(np.isfinite(amps), amps, 0.5)
+            amps = np.clip(amps, 0, 1)
             
         elif self._mapping_mode == 'spectral':
             # Spectral centroid mapping
             features = self._extract_spectral_centroid(combined_data, avg_srate)
             # Normalize to 0-1 (assuming centroid in 0-50 Hz range for EEG)
+            features = np.where(np.isfinite(features), features, 25.0)  # Default to middle
             features = np.clip(features / 50.0, 0, 1)
             amps = np.ones(n_channels) * 0.5
             
@@ -422,12 +453,18 @@ class SonifyAudio(RendererBufferData, AudioRenderer):
             rms = self._extract_rms(combined_data)
             features = combined_data[:, -1]  # Use amplitude for pitch
             features = np.clip(features + 0.5, 0, 1)
+            features = np.where(np.isfinite(features), features, 0.5)
             # Normalize RMS to amplitude
-            amps = np.clip(np.log1p(rms * 100) / np.log1p(100), 0, 1)
+            with np.errstate(invalid='ignore', divide='ignore'):
+                amps = np.log1p(np.maximum(rms * 100, 0)) / np.log1p(100)
+            amps = np.where(np.isfinite(amps), amps, 0.5)
+            amps = np.clip(amps, 0, 1)
             
         else:
             # Default to amplitude
-            features = np.clip(combined_data[:, -1] + 0.5, 0, 1)
+            features = combined_data[:, -1]
+            features = np.clip(features + 0.5, 0, 1)
+            features = np.where(np.isfinite(features), features, 0.5)
             amps = np.ones(n_channels) * 0.5
         
         # Map features to frequencies
