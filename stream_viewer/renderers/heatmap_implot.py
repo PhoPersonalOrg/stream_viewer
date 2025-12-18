@@ -15,7 +15,8 @@ from stream_viewer.renderers.data.base import RendererDataTimeSeries
 from stream_viewer.renderers.display.implot import ImPlotRenderer, ImPlotOpenGLWidget, SLIMGUI_AVAILABLE
 
 if SLIMGUI_AVAILABLE:
-    from slimgui import ImGui, ImPlot
+    from slimgui import imgui
+    from slimgui import implot
 
 logger = logging.getLogger(__name__)
 
@@ -427,7 +428,7 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
         if buf_len == 0 or not hasattr(buf, "_write_idx"):
             return 0
         
-        curr_wi = int(buf._write_idx)
+        curr_wi = int(buf._write_idx)  # type: ignore
         prev_wi = state.last_write_index
         
         if prev_wi is None:
@@ -602,45 +603,46 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
         
         # Begin ImPlot plot
         plot_title = self._ylabel or stream_ylabel if self.ylabel_as_title else ""
-        if ImPlot.BeginPlot(plot_title, "Time (s)", "Frequency (Hz)", (-1, -1), ImPlot.Flags_None, ImPlot.AxisFlags_None, ImPlot.AxisFlags_None):
+        if implot.begin_plot(plot_title, (-1, -1)):
             try:
+                # Set axis labels
+                implot.setup_axis(implot.Axis.X1, label="Time (s)")
+                implot.setup_axis(implot.Axis.Y1, label="Frequency (Hz)")
                 # Set axis ranges
-                ImPlot.SetupAxisLimits(ImPlot.Axis_X1, time_start, time_start + time_width, ImPlot.Cond_Always)
-                ImPlot.SetupAxisLimits(ImPlot.Axis_Y1, float(self._fmin_hz), float(self._fmax_hz), ImPlot.Cond_Always)
+                implot.setup_axes_limits(implot.Axis.X1, time_start, time_start + time_width, implot.Cond.ALWAYS)
+                implot.setup_axes_limits(implot.Axis.Y1, float(self._fmin_hz), float(self._fmax_hz), implot.Cond.ALWAYS)
                 
                 # Set colormap
                 try:
-                    colormap = getattr(ImPlot, f"Colormap_{colormap_name}", ImPlot.Colormap_Viridis)
+                    colormap = getattr(implot, f"colormap_{colormap_name.lower()}", implot.Colormap.VIRIDIS)
                 except AttributeError:
-                    colormap = ImPlot.Colormap_Viridis
-                ImPlot.PushColormap(colormap)
+                    colormap = implot.Colormap.VIRIDIS
+                implot.push_colormap(colormap)
                 
                 try:
                     # Plot heatmap
-                    # ImPlot.PlotHeatmap expects data in row-major order (frequencies x time)
+                    # implot.plot_heatmap expects data in row-major order (frequencies x time)
                     # Our display array is already in this format
                     # Convert to contiguous array if needed
                     display_contiguous = np.ascontiguousarray(display, dtype=np.float32)
                     
-                    # ImPlot.PlotHeatmap signature: (label, values, rows, cols, scale_min, scale_max, label_fmt, bounds_min, bounds_max)
-                    ImPlot.PlotHeatmap(
+                    # implot.plot_heatmap signature: (label_id, values, scale_min, scale_max, label_fmt, bounds_min, bounds_max, flags)
+                    implot.plot_heatmap(
                         "Spectrogram",
-                        display_contiguous.flatten(),  # Flatten for ImPlot
-                        display.shape[0],    # Rows (frequencies)
-                        display.shape[1],    # Cols (time)
-                        min_level,
-                        max_level,
-                        None,  # Label format (None for default)
-                        (time_start, float(self._fmin_hz)),  # Scale min (x, y)
-                        (time_start + time_width, float(self._fmax_hz))  # Scale max (x, y)
+                        display_contiguous,  # 2D array (rows x cols), dimensions inferred automatically
+                        min_level,  # scale_min
+                        max_level,  # scale_max
+                        None,  # label_fmt (None for default)
+                        (time_start, float(self._fmin_hz)),  # bounds_min (x, y)
+                        (time_start + time_width, float(self._fmax_hz))  # bounds_max (x, y)
                     )
                 except Exception as e:
                     logger.warning(f"Error plotting heatmap: {e}", exc_info=True)
                 finally:
-                    ImPlot.PopColormap()
+                    implot.pop_colormap()
                 
             finally:
-                ImPlot.EndPlot()
+                implot.end_plot()
     
     def update_visualization(self, data: np.ndarray, timestamps: np.ndarray) -> None:
         """
@@ -673,7 +675,7 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
                 
                 # Check if there's new data to process
                 if hasattr(buf, "_write_idx"):
-                    curr_write_idx = int(buf._write_idx)
+                    curr_write_idx = int(buf._write_idx)  # type: ignore
                     has_new_data = (state.last_processed_write_idx is None or 
                                    curr_write_idx != state.last_processed_write_idx)
                 
@@ -704,7 +706,7 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
                                         
                                         # Mark this write index as processed
                                         if hasattr(buf, "_write_idx"):
-                                            state.last_processed_write_idx = int(buf._write_idx)
+                                            state.last_processed_write_idx = int(buf._write_idx)  # type: ignore
 
             # Trigger widget update (this will call _render_implot_plot)
             implot_widget.update()  # This triggers paintGL
