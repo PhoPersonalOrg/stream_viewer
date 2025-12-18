@@ -39,6 +39,7 @@ class SourceState:
     locked_levels: Optional[Tuple[float, float]] = None
     last_write_index: Optional[int] = None
     sample_carry: int = 0
+    last_processed_write_idx: Optional[int] = None  # Track last processed write index
     
     def reset(self):
         """Reset all state to initial values."""
@@ -50,11 +51,15 @@ class SourceState:
         self.locked_levels = None
         self.last_write_index = None
         self.sample_carry = 0
+        self.last_processed_write_idx = None
 
 
 class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     """
     Production-quality PyQtGraph-based 2D spectrogram (heatmap) renderer for live EEG data.
+    
+    Compatible with HeatmapControlPanel which provides Apply/Revert buttons
+    for responsive configuration changes.
     
     This renderer computes and displays spectrograms by averaging across visible channels
     for each data source. It supports both Sweep and Scroll visualization modes with
@@ -79,6 +84,7 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         nperseg: Number of samples per segment for FFT
         noverlap: Number of overlapping samples between segments
     """
+    COMPAT_ICONTROL = ['HeatmapControlPanel']
     plot_modes = ["Sweep", "Scroll"]
     gui_kwargs = dict(
         RendererDataTimeSeries.gui_kwargs,
@@ -129,6 +135,12 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         # Cached LUT for performance
         self._cached_lut: Optional[np.ndarray] = None
         self._cached_color_set: Optional[str] = None
+        
+        # Debounce timer for property changes
+        self._reset_timer = pg.QtCore.QTimer()
+        self._reset_timer.setSingleShot(True)
+        self._reset_timer.timeout.connect(self._do_pending_reset)
+        self._pending_reset = {'reset_channel_labels': False}
 
         super().__init__(show_chan_labels=show_chan_labels, color_set=color_set, **kwargs)
         self.reset_renderer()
@@ -143,6 +155,10 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         Args:
             reset_channel_labels: Whether to reset channel labels
         """
+        # Cancel any pending debounced resets to avoid double resets
+        self._reset_timer.stop()
+        self._pending_reset = {'reset_channel_labels': False}
+        
         self._widget.clear()
         self._widget.setBackground(self.parse_color_str(self.bg_color))
         self._src_last_marker_time = [-np.inf for _ in range(len(self._data_sources))]
@@ -217,6 +233,37 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
 
         self._widget.ci.setSpacing(10. if self.ylabel_as_title else 0.)
         self._do_yaxis_sync = True
+
+    def _schedule_reset(self, reset_channel_labels: bool = False) -> None:
+        """
+        Schedule a debounced reset_renderer call.
+        
+        This prevents expensive reset operations from blocking the UI during rapid
+        property changes. The reset will execute after 300ms of inactivity.
+        
+        Args:
+            reset_channel_labels: Whether to reset channel labels when reset executes
+        """
+        self._pending_reset['reset_channel_labels'] = (
+            self._pending_reset.get('reset_channel_labels', False) or reset_channel_labels
+        )
+        self._reset_timer.stop()
+        self._reset_timer.start(300)  # 300ms debounce
+
+    def _do_pending_reset(self) -> None:
+        """
+        Execute the pending reset (called by debounce timer).
+        
+        Stops the update timer during reset to prevent conflicts, then restarts it.
+        """
+        if self._timer.isActive():
+            self._timer.stop()
+        try:
+            self.reset_renderer(reset_channel_labels=self._pending_reset['reset_channel_labels'])
+        finally:
+            if not self._timer.isActive():
+                self.restart_timer()
+        self._pending_reset = {'reset_channel_labels': False}
 
     def _ensure_source_state(self, src_ix: int, srate: float, f: np.ndarray, Pxx: np.ndarray) -> bool:
         """
@@ -595,44 +642,48 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
 
             # Process spectrogram if buffer has data
             buff_data = self._buffers[src_ix]._data
+            has_new_data = False
             if buff_data.size > 0:
-                # Compute channel average with validation
-                x = self._compute_channel_average(buff_data)
-                if x is None:
-                    continue
-
-                # Get sampling rate
-                srate = self._data_sources[src_ix].data_stats.get('srate', 0.0) or 0.0
-                if srate < MIN_SRATE:
-                    continue
-
-                # Compute spectrogram
-                spec_result = self._compute_spectrogram(x, srate)
-                if spec_result is None:
-                    continue
-                
-                f, t, Pxx = spec_result
-
-                # Ensure source state is initialized
-                if not self._ensure_source_state(src_ix, srate, f, Pxx):
-                    continue
-
-                state = self._source_states[src_ix]
-                if state.freq_mask is None or state.heatmap is None:
-                    continue
-
-                # Apply frequency mask
-                P_use = Pxx[state.freq_mask, :]
-
-                # Calculate new columns to add
                 buf = self._buffers[src_ix]
-                new_cols = self._calculate_new_columns(src_ix, buf)
+                state = self._source_states[src_ix]
                 
-                # Update heatmap with new columns
-                if new_cols > 0:
-                    self._update_heatmap_columns(src_ix, P_use, new_cols)
+                # Check if there's new data to process (avoid expensive spectrogram computation if no new data)
+                if hasattr(buf, "_write_idx"):
+                    curr_write_idx = int(buf._write_idx)  # type: ignore
+                    # Only compute spectrogram if we have new data or haven't processed this source yet
+                    has_new_data = (state.last_processed_write_idx is None or 
+                                   curr_write_idx != state.last_processed_write_idx)
+                
+                if has_new_data:
+                    # Compute channel average with validation
+                    x = self._compute_channel_average(buff_data)
+                    if x is not None:
+                        # Get sampling rate
+                        srate = self._data_sources[src_ix].data_stats.get('srate', 0.0) or 0.0
+                        if srate >= MIN_SRATE:
+                            # Compute spectrogram (only when we have new data)
+                            spec_result = self._compute_spectrogram(x, srate)
+                            if spec_result is not None:
+                                f, t, Pxx = spec_result
 
-                # Prepare display heatmap
+                                # Ensure source state is initialized
+                                if self._ensure_source_state(src_ix, srate, f, Pxx):
+                                    if state.freq_mask is not None and state.heatmap is not None:
+                                        # Apply frequency mask
+                                        P_use = Pxx[state.freq_mask, :]
+
+                                        # Calculate new columns to add
+                                        new_cols = self._calculate_new_columns(src_ix, buf)
+                                        
+                                        # Update heatmap with new columns
+                                        if new_cols > 0:
+                                            self._update_heatmap_columns(src_ix, P_use, new_cols)
+                                        
+                                        # Mark this write index as processed
+                                        if hasattr(buf, "_write_idx"):
+                                            state.last_processed_write_idx = int(buf._write_idx)  # type: ignore
+
+                # Prepare display heatmap (always update display, even if no new data)
                 display = self._prepare_display_heatmap(src_ix)
                 if display is not None:
                     # Update color levels
@@ -641,7 +692,6 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                     # Determine time range for x-axis
                     if self.plot_mode == "Scroll":
                         # In scroll mode, use actual time range from buffer
-                        buf = self._buffers[src_ix]
                         if buf._tvec.size > 0:
                             t_min = float(np.nanmin(buf._tvec))
                             t_max = float(np.nanmax(buf._tvec))
@@ -687,7 +737,7 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     @ylabel_as_title.setter
     def ylabel_as_title(self, value):
         self._ylabel_as_title = value
-        self.reset_renderer(reset_channel_labels=True)
+        self._schedule_reset(reset_channel_labels=True)
 
     @property
     def ylabel(self):
@@ -696,7 +746,7 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     @ylabel.setter
     def ylabel(self, value):
         self._ylabel = value
-        self.reset_renderer(reset_channel_labels=True)
+        self._schedule_reset(reset_channel_labels=True)
 
     @property
     def ylabel_width(self):
@@ -705,7 +755,7 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     @ylabel_width.setter
     def ylabel_width(self, value):
         self._ylabel_width = value
-        self.reset_renderer(reset_channel_labels=True)
+        self._schedule_reset(reset_channel_labels=True)
 
     @property
     def fmin_hz(self):
@@ -714,7 +764,18 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     @fmin_hz.setter
     def fmin_hz(self, value):
         self._fmin_hz = float(value)
-        self.reset_renderer(reset_channel_labels=False)
+        # Update Y-axis range in-place if plots exist
+        if self._image_items:
+            for src_ix in range(len(self._image_items)):
+                pw = self._widget.getItem(src_ix, 0)
+                if pw is not None:
+                    pw.setYRange(self._fmin_hz, self._fmax_hz)
+            # Invalidate frequency mask - will recompute on next update
+            for state in self._source_states:
+                state.freq_mask = None
+        else:
+            # No plots yet, need full reset
+            self._schedule_reset(reset_channel_labels=False)
 
     @property
     def fmax_hz(self):
@@ -723,7 +784,18 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     @fmax_hz.setter
     def fmax_hz(self, value):
         self._fmax_hz = float(value)
-        self.reset_renderer(reset_channel_labels=False)
+        # Update Y-axis range in-place if plots exist
+        if self._image_items:
+            for src_ix in range(len(self._image_items)):
+                pw = self._widget.getItem(src_ix, 0)
+                if pw is not None:
+                    pw.setYRange(self._fmin_hz, self._fmax_hz)
+            # Invalidate frequency mask - will recompute on next update
+            for state in self._source_states:
+                state.freq_mask = None
+        else:
+            # No plots yet, need full reset
+            self._schedule_reset(reset_channel_labels=False)
 
     @property
     def nperseg(self):
@@ -732,7 +804,18 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     @nperseg.setter
     def nperseg(self, value):
         self._nperseg = int(value)
-        self.reset_renderer(reset_channel_labels=False)
+        # Invalidate state - will recompute with new parameters on next update
+        if self._image_items:
+            for state in self._source_states:
+                state.hop_size = None
+                state.n_time_cols = None
+                state.heatmap = None
+                state.write_index = 0
+                state.last_processed_write_idx = None
+                state.sample_carry = 0
+        else:
+            # No plots yet, need full reset
+            self._schedule_reset(reset_channel_labels=False)
 
     @property
     def noverlap(self):
@@ -741,12 +824,23 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     @noverlap.setter
     def noverlap(self, value):
         self._noverlap = int(value)
-        self.reset_renderer(reset_channel_labels=False)
+        # Invalidate state - will recompute with new parameters on next update
+        if self._image_items:
+            for state in self._source_states:
+                state.hop_size = None
+                state.n_time_cols = None
+                state.heatmap = None
+                state.write_index = 0
+                state.last_processed_write_idx = None
+                state.sample_carry = 0
+        else:
+            # No plots yet, need full reset
+            self._schedule_reset(reset_channel_labels=False)
 
     @RendererDataTimeSeries.auto_scale.setter
     def auto_scale(self, value):
         self._requested_auto_scale = value.lower()
-        self.reset_renderer(reset_channel_labels=False)
+        self._schedule_reset(reset_channel_labels=False)
     
     @property
     def color_set(self):
@@ -759,5 +853,11 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         super().color_set = value  # type: ignore
         self._cached_lut = None
         self._cached_color_set = None
+        # Update image items with new colormap if they exist
+        if self._image_items:
+            lut = self._get_colormap_lut()
+            for img in self._image_items:
+                if img is not None:
+                    img.setLookupTable(lut)
 
 
