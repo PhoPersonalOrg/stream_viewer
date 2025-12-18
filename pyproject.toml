@@ -39,6 +39,7 @@ dependencies = [
     "redis>=6.1.1",
     "python-levenshtein>=0.25.1",
     "pyaudio>=0.2.14",
+    "slimgui>=0.6.0",
 ]
 
 [project.scripts]
@@ -63,7 +64,4 @@ dev = [
     "mkdocstrings-python>=1.11.1",
     "pygments>=2.19.2",
     "pymdown-extensions>=10.15",
-]
-implot = [
-    "slimgui>=0.1.0",
 ]
