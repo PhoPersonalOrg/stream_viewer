@@ -2,7 +2,7 @@
 
 import logging
 import numpy as np
-from qtpy import QtCore, QtWidgets, QtOpenGL
+from qtpy import QtCore, QtWidgets
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -21,116 +21,142 @@ except ImportError:
     SLIMGUI_AVAILABLE = False
     logger.warning("slimgui not available. HeatmapImPlot renderer will not work.")
 
+# Import QOpenGLWidget - it's in QtWidgets, not QtOpenGL
+try:
+    from PyQt5.QtWidgets import QOpenGLWidget
+except ImportError:
+    try:
+        from PySide2.QtWidgets import QOpenGLWidget
+    except ImportError:
+        # Fallback: try to get it from qtpy if available
+        try:
+            from qtpy.QtWidgets import QOpenGLWidget
+        except ImportError:
+            QOpenGLWidget = None
+            logger.warning("QOpenGLWidget not available. HeatmapImPlot renderer will not work.")
 
-class ImPlotOpenGLWidget(QtOpenGL.QOpenGLWidget):
-    """Custom QOpenGLWidget for embedding ImPlot rendering."""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._implot_context = None
-        self._imgui_context = None
-        self._render_callback = None
-        self._width = 0
-        self._height = 0
+
+if QOpenGLWidget is None:
+    # Create a dummy class if QOpenGLWidget is not available
+    class ImPlotOpenGLWidget(QtWidgets.QWidget):
+        """Dummy widget when QOpenGLWidget is not available."""
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            logger.error("QOpenGLWidget not available. Cannot create ImPlotOpenGLWidget.")
+        def set_render_callback(self, callback):
+            pass
+        def cleanup(self):
+            pass
+else:
+    class ImPlotOpenGLWidget(QOpenGLWidget):
+        """Custom QOpenGLWidget for embedding ImPlot rendering."""
         
-    def set_render_callback(self, callback):
-        """Set the callback function to render ImPlot content."""
-        self._render_callback = callback
-        
-    def initializeGL(self):
-        """Initialize OpenGL and ImPlot context."""
-        if not SLIMGUI_AVAILABLE:
-            logger.error("slimgui not available, cannot initialize ImPlot")
-            return
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._implot_context = None
+            self._imgui_context = None
+            self._render_callback = None
+            self._width = 0
+            self._height = 0
             
-        try:
-            # Initialize ImGui context
-            if self._imgui_context is None:
-                self._imgui_context = ImGui.CreateContext()
-                ImGui.SetCurrentContext(self._imgui_context)
+        def set_render_callback(self, callback):
+            """Set the callback function to render ImPlot content."""
+            self._render_callback = callback
             
-            # Initialize ImPlot context
-            if self._implot_context is None:
-                self._implot_context = ImPlot.CreateContext()
-                ImPlot.SetCurrentContext(self._implot_context)
-            
-            # Set up ImGui IO
-            io = ImGui.GetIO()
-            io.ConfigFlags |= ImGui.ConfigFlags_ViewportsEnable
-            
-            logger.debug("ImPlot context initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize ImPlot context: {e}", exc_info=True)
-    
-    def resizeGL(self, width, height):
-        """Handle widget resize."""
-        self._width = width
-        self._height = height
-        if SLIMGUI_AVAILABLE and self._imgui_context is not None:
+        def initializeGL(self):
+            """Initialize OpenGL and ImPlot context."""
+            if not SLIMGUI_AVAILABLE:
+                logger.error("slimgui not available, cannot initialize ImPlot")
+                return
+                
             try:
-                ImGui.SetCurrentContext(self._imgui_context)
-                io = ImGui.GetIO()
-                io.DisplaySize = (width, height)
-            except Exception as e:
-                logger.warning(f"Error updating ImGui display size: {e}")
-    
-    def paintGL(self):
-        """Render ImPlot content."""
-        if not SLIMGUI_AVAILABLE or self._implot_context is None:
-            return
-            
-        try:
-            from OpenGL import GL
-            
-            # Make sure we're using the correct OpenGL context
-            ImGui.SetCurrentContext(self._imgui_context)
-            ImPlot.SetCurrentContext(self._implot_context)
-            
-            # Start new frame
-            io = ImGui.GetIO()
-            io.DisplaySize = (self.width(), self.height())
-            io.DeltaTime = 1.0 / 60.0  # Approximate delta time
-            
-            ImGui.NewFrame()
-            
-            # Call render callback if set
-            if self._render_callback is not None:
-                self._render_callback()
-            
-            # Render
-            ImGui.Render()
-            
-            # Get draw data and render using OpenGL
-            draw_data = ImGui.GetDrawData()
-            if draw_data:
-                # Clear and set up viewport
-                GL.glViewport(0, 0, int(io.DisplaySize[0]), int(io.DisplaySize[1]))
-                GL.glClearColor(0.0, 0.0, 0.0, 1.0)
-                GL.glClear(GL.GL_COLOR_BUFFER_BIT)
-                
-                # Render ImGui draw data
-                # Note: This is a simplified rendering - slimgui may provide a renderer
-                # For now, we'll rely on slimgui's backend to handle this
-                # If slimgui has a renderer, use it here instead
-                
-        except Exception as e:
-            logger.error(f"Error in ImPlot rendering: {e}", exc_info=True)
-    
-    def cleanup(self):
-        """Clean up ImPlot and ImGui contexts."""
-        if SLIMGUI_AVAILABLE:
-            try:
-                if self._implot_context is not None:
-                    ImPlot.SetCurrentContext(self._implot_context)
-                    ImPlot.DestroyContext(self._implot_context)
-                    self._implot_context = None
-                
-                if self._imgui_context is not None:
+                # Initialize ImGui context
+                if self._imgui_context is None:
+                    self._imgui_context = ImGui.CreateContext()
                     ImGui.SetCurrentContext(self._imgui_context)
-                    ImGui.DestroyContext(self._imgui_context)
-                    self._imgui_context = None
+                
+                # Initialize ImPlot context
+                if self._implot_context is None:
+                    self._implot_context = ImPlot.CreateContext()
+                    ImPlot.SetCurrentContext(self._implot_context)
+                
+                # Set up ImGui IO
+                io = ImGui.GetIO()
+                io.ConfigFlags |= ImGui.ConfigFlags_ViewportsEnable
+                
+                logger.debug("ImPlot context initialized successfully")
             except Exception as e:
-                logger.warning(f"Error cleaning up ImPlot context: {e}")
+                logger.error(f"Failed to initialize ImPlot context: {e}", exc_info=True)
+        
+        def resizeGL(self, width, height):
+            """Handle widget resize."""
+            self._width = width
+            self._height = height
+            if SLIMGUI_AVAILABLE and self._imgui_context is not None:
+                try:
+                    ImGui.SetCurrentContext(self._imgui_context)
+                    io = ImGui.GetIO()
+                    io.DisplaySize = (width, height)
+                except Exception as e:
+                    logger.warning(f"Error updating ImGui display size: {e}")
+        
+        def paintGL(self):
+            """Render ImPlot content."""
+            if not SLIMGUI_AVAILABLE or self._implot_context is None:
+                return
+                
+            try:
+                from OpenGL import GL
+                
+                # Make sure we're using the correct OpenGL context
+                ImGui.SetCurrentContext(self._imgui_context)
+                ImPlot.SetCurrentContext(self._implot_context)
+                
+                # Start new frame
+                io = ImGui.GetIO()
+                io.DisplaySize = (self.width(), self.height())
+                io.DeltaTime = 1.0 / 60.0  # Approximate delta time
+                
+                ImGui.NewFrame()
+                
+                # Call render callback if set
+                if self._render_callback is not None:
+                    self._render_callback()
+                
+                # Render
+                ImGui.Render()
+                
+                # Get draw data and render using OpenGL
+                draw_data = ImGui.GetDrawData()
+                if draw_data:
+                    # Clear and set up viewport
+                    GL.glViewport(0, 0, int(io.DisplaySize[0]), int(io.DisplaySize[1]))
+                    GL.glClearColor(0.0, 0.0, 0.0, 1.0)
+                    GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+                    
+                    # Render ImGui draw data
+                    # Note: This is a simplified rendering - slimgui may provide a renderer
+                    # For now, we'll rely on slimgui's backend to handle this
+                    # If slimgui has a renderer, use it here instead
+                    
+            except Exception as e:
+                logger.error(f"Error in ImPlot rendering: {e}", exc_info=True)
+        
+        def cleanup(self):
+            """Clean up ImPlot and ImGui contexts."""
+            if SLIMGUI_AVAILABLE:
+                try:
+                    if self._implot_context is not None:
+                        ImPlot.SetCurrentContext(self._implot_context)
+                        ImPlot.DestroyContext(self._implot_context)
+                        self._implot_context = None
+                    
+                    if self._imgui_context is not None:
+                        ImGui.SetCurrentContext(self._imgui_context)
+                        ImGui.DestroyContext(self._imgui_context)
+                        self._imgui_context = None
+                except Exception as e:
+                    logger.warning(f"Error cleaning up ImPlot context: {e}")
 
 
 class ImPlotRenderer(RendererBaseDisplay):
