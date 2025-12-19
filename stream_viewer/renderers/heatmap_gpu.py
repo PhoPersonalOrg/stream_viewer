@@ -4,7 +4,9 @@ import json
 import logging
 import warnings
 import numpy as np
-from qtpy import QtGui, QtWidgets, QtCore
+from qtpy import QtGui, QtWidgets
+import pyqtgraph as pg
+from pyqtgraph.widgets.RemoteGraphicsView import RemoteGraphicsView
 from scipy import signal
 from typing import Optional, Tuple, TYPE_CHECKING
 
@@ -12,15 +14,25 @@ if TYPE_CHECKING:
     from stream_viewer.buffers.stream_data_buffers import TimeSeriesBuffer
 
 from stream_viewer.renderers.data.base import RendererDataTimeSeries
-from stream_viewer.renderers.display.implot import ImPlotRenderer, ImPlotOpenGLWidget, SLIMGUI_AVAILABLE
-
-if SLIMGUI_AVAILABLE:
-    from slimgui import imgui
-    from slimgui import implot
+from stream_viewer.renderers.display.pyqtgraph import PGRenderer
 
 logger = logging.getLogger(__name__)
 
-# Constants (same as HeatmapPG)
+# Try to import PyTorch for GPU acceleration
+try:
+    import torch
+    _has_torch = True
+    _device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        logger.info("PyTorch GPU acceleration available (CUDA)")
+    else:
+        logger.info("PyTorch available but using CPU (CUDA not available)")
+except ImportError:
+    _has_torch = False
+    _device = None
+    logger.info("PyTorch not available, will use CPU fallback (scipy.signal.spectrogram)")
+
+# Constants
 DEFAULT_DB_FLOOR = -120.0  # Default dB value for NaN/invalid data
 DEFAULT_DB_CEILING = 0.0    # Default dB ceiling for auto-scale fallback
 EPSILON_DB = 1e-12          # Small epsilon to prevent log(0) in dB conversion
@@ -56,18 +68,22 @@ class SourceState:
         self.last_processed_write_idx = None
 
 
-class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
+class HeatmapGPU(RendererDataTimeSeries, PGRenderer):
     """
-    Experimental GPU-accelerated spectrogram renderer using ImPlot.
+    GPU-accelerated PyQtGraph-based 2D spectrogram (heatmap) renderer for live EEG data.
     
-    This renderer uses ImPlot for GPU-accelerated rendering while maintaining
-    compatibility with the existing renderer architecture. It reuses the same
-    spectrogram computation logic as HeatmapPG but renders using ImPlot's
-    PlotHeatmap function for improved performance.
+    Uses PyTorch for GPU-accelerated spectrogram computation when available, with graceful
+    fallback to CPU-based scipy.signal.spectrogram. Compatible with HeatmapControlPanel
+    which provides Apply/Revert buttons for responsive configuration changes.
+    
+    This renderer computes and displays spectrograms by averaging across visible channels
+    for each data source. It supports both Sweep and Scroll visualization modes with
+    efficient column-wise updates and robust error handling.
     
     Features:
+    - GPU-accelerated spectrogram computation using PyTorch (when available)
+    - CPU fallback using scipy.signal.spectrogram
     - Real-time spectrogram computation with configurable frequency ranges
-    - GPU-accelerated rendering via ImPlot
     - Efficient column-wise updates to minimize computational overhead
     - Robust validation and error handling to prevent crashes
     - Automatic level locking for stable color scaling
@@ -89,7 +105,7 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
     plot_modes = ["Sweep", "Scroll"]
     gui_kwargs = dict(
         RendererDataTimeSeries.gui_kwargs,
-        **ImPlotRenderer.gui_kwargs,
+        **PGRenderer.gui_kwargs,
         ylabel_as_title=bool,
         ylabel_width=int,
         ylabel=str,
@@ -113,12 +129,6 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
                  nperseg: int = 256,
                  noverlap: int = 128,
                  **kwargs):
-        if not SLIMGUI_AVAILABLE:
-            raise ImportError(
-                "slimgui is required for HeatmapImPlot. "
-                "Install it with: pip install slimgui"
-            )
-        
         self._ylabel_as_title = ylabel_as_title
         self._ylabel_width = ylabel_width
         self._ylabel = ylabel
@@ -130,22 +140,32 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
         self._nperseg = int(nperseg)
         self._noverlap = int(noverlap)
 
-        # Container widget with vertical layout for ImPlot widgets
+        # GPU/CPU computation mode
+        self._use_gpu = _has_torch and _device is not None and _device.type == 'cuda'
+        if self._use_gpu:
+            logger.info("HeatmapGPU: Using GPU-accelerated PyTorch spectrogram computation")
+        else:
+            logger.info("HeatmapGPU: Using CPU-based scipy.signal.spectrogram computation")
+
+        # Container widget with vertical layout for RemoteGraphicsView instances
         self._widget = QtWidgets.QWidget()
         self._widget.setLayout(QtWidgets.QVBoxLayout())
-        self._implot_widgets: list[Optional[ImPlotOpenGLWidget]] = []  # Store ImPlot widgets (None for skipped sources)
+        self._remote_views: list[Optional[RemoteGraphicsView]] = []  # Store RemoteGraphicsView instances (None for skipped sources)
+        self._plot_items: list = []  # Store remote plot items for x-axis linking (None for skipped sources)
         self._do_yaxis_sync = False
         self._src_last_marker_time = []
         self._marker_texts_pool = deque()
         self._marker_info = deque()
         self._t_expired = -np.inf
+        self._image_items = []
         # Per-source state using SourceState dataclass
         self._source_states: list[SourceState] = []
-        # Cached colormap name
-        self._cached_colormap_name = None
+        # Cached LUT for performance
+        self._cached_lut: Optional[np.ndarray] = None
+        self._cached_color_set: Optional[str] = None
         
         # Debounce timer for property changes
-        self._reset_timer = QtCore.QTimer()
+        self._reset_timer = pg.QtCore.QTimer()
         self._reset_timer.setSingleShot(True)
         self._reset_timer.timeout.connect(self._do_pending_reset)
         self._pending_reset = {'reset_channel_labels': False}
@@ -167,20 +187,19 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
         self._reset_timer.stop()
         self._pending_reset = {'reset_channel_labels': False}
         
-        # Clear container layout - remove all ImPlot widgets
+        # Clear container layout - remove all RemoteGraphicsView widgets
         layout = self._widget.layout()
         while layout.count():
             child = layout.takeAt(0)
             if child.widget():
-                widget = child.widget()
-                if isinstance(widget, ImPlotOpenGLWidget):
-                    widget.cleanup()
-                widget.deleteLater()
+                child.widget().deleteLater()
         
         # Clear storage - will be reinitialized below to match data_sources indices
         self._src_last_marker_time = [-np.inf for _ in range(len(self._data_sources))]
         n_sources = len(self._data_sources)
+        self._image_items = [None] * n_sources
         # Initialize source states
+        n_sources = len(self._data_sources)
         while len(self._source_states) < n_sources:
             self._source_states.append(SourceState())
         # Reset all source states
@@ -192,7 +211,9 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
         if len(self.chan_states) == 0:
             return
 
-        # Requested auto-scale maps to actual behavior; for heatmaps, ImPlot levels handle scaling
+        labelStyle = {'color': '#FFF', 'font-size': str(self.font_size) + 'pt'}
+
+        # Requested auto-scale maps to actual behavior; for heatmaps, pyqtgraph levels handle scaling
         if self._requested_auto_scale == 'all':
             self._auto_scale = 'none'
         else:
@@ -200,10 +221,12 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
 
         row_offset = -1
         last_row = 0
+        bottom_plot_item = None
         
-        # Initialize implot_widgets list to match data_sources indices (None for skipped sources)
+        # Initialize plot_items list to match data_sources indices (None for skipped sources)
         n_sources = len(self._data_sources)
-        self._implot_widgets = [None] * n_sources
+        self._plot_items = [None] * n_sources
+        self._remote_views = [None] * n_sources
         
         for src_ix, src in enumerate(self._data_sources):
             ch_states = self.chan_states[self.chan_states['src'] == src.identifier]
@@ -214,30 +237,76 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
             row_offset += 1
             last_row = row_offset
             
-            # Create ImPlot widget for this data source
-            implot_widget = ImPlotOpenGLWidget()
-            implot_widget.setMinimumHeight(200)  # Minimum height for visibility
+            # Create RemoteGraphicsView for this data source
+            remote_view = RemoteGraphicsView(debug=False)
+            # Enable antialiasing in remote process (doesn't affect main process performance)
+            remote_view.pg.setConfigOptions(antialias=True)  # type: ignore
             
-            # Set render callback
-            def make_render_callback(src_idx):
-                def render_callback():
-                    self._render_implot_plot(src_idx)
-                return render_callback
+            # Create plot item in remote process
+            pw = remote_view.pg.PlotItem()  # type: ignore
+            # Performance: Apply deferGetattr to speed up access
+            pw._setProxyOptions(deferGetattr=True)
+            # Set background on the view widget using Qt palette (RemoteGraphicsView is in main process)
+            bg_color_str = self.parse_color_str(self.bg_color)
+            bg_qcolor = pg.mkColor(bg_color_str)
+            palette = remote_view.palette()
+            palette.setColor(remote_view.backgroundRole(), bg_qcolor)
+            remote_view.setPalette(palette)
+            remote_view.setAutoFillBackground(True)
+            remote_view.setCentralItem(pw)
             
-            implot_widget.set_render_callback(make_render_callback(src_ix))
-            
-            # Store reference at source index (not row_offset)
-            self._implot_widgets[src_ix] = implot_widget
+            # Store references at source index (not row_offset)
+            self._remote_views[src_ix] = remote_view
+            self._plot_items[src_ix] = pw
             
             # Add to container layout
-            layout.addWidget(implot_widget)
+            layout.addWidget(remote_view)
+            
+            pw.showGrid(x=True, y=True, alpha=0.3)
+
+            # Create font in remote process to avoid QGuiApplication warnings
+            font = remote_view.pg.QtGui.QFont()  # type: ignore
+            font.setPointSize(self.font_size - 2)
+            pw.setXRange(0, self.duration)
+            pw.getAxis("bottom").setTickFont(font)
+            pw.getAxis("bottom").setStyle(showValues=self.ylabel_as_title)
+
+            yax = pw.getAxis('left')
+            yax.setTickFont(font)
+            stream_ylabel = json.loads(src.identifier)['name']
+            if 'unit' in ch_states and ch_states['unit'].nunique() == 1:  # type: ignore
+                stream_ylabel = stream_ylabel + ' (%s)' % ch_states['unit'].iloc[0]  # type: ignore
+            pw.setLabel('top' if self.ylabel_as_title else 'left', self._ylabel or stream_ylabel, **labelStyle)
+            if self.ylabel_as_title:
+                pw.getAxis("top").setStyle(showValues=False)
+
+            # Create the image item for spectrogram in remote process; attach color LUT later on first update
+            img = remote_view.pg.ImageItem(axisOrder='row-major')  # type: ignore
+            pw.addItem(img)
+            self._image_items[src_ix] = img
+
+            # Y axis range (frequency)
+            pw.setYRange(self._fmin_hz, self._fmax_hz)
+
+        # Bottom axis label and link x-axes manually
+        # Find the last non-None plot item (bottom one)
+        bottom_plot_item = None
+        for plot_item in reversed(self._plot_items):
+            if plot_item is not None:
+                bottom_plot_item = plot_item
+                break
+        
+        if bottom_plot_item is not None:
+            bottom_plot_item.setLabel('bottom', 'Time', units='s', **labelStyle)
+            bottom_plot_item.getAxis("bottom").setStyle(showValues=True)
+            # Link all plots to bottom plot
+            for plot_item in self._plot_items:
+                if plot_item is not None and plot_item is not bottom_plot_item:
+                    plot_item.setXLink(bottom_plot_item)
 
         # Set layout spacing
         layout.setSpacing(int(10. if self.ylabel_as_title else 0.))
         self._do_yaxis_sync = True
-        
-        # Update cached colormap
-        self._cached_colormap_name = self.get_colormap_name(self.color_set)
 
     def _schedule_reset(self, reset_channel_labels: bool = False) -> None:
         """
@@ -321,6 +390,21 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
         
         return state.heatmap is not None
 
+    def sync_y_axes(self) -> None:
+        """Synchronize y-axis widths across all plots."""
+        max_width = self._ylabel_width or 0.
+        for pw in self._plot_items:
+            if pw is None:
+                continue
+            yax = pw.getAxis('left')
+            max_width = max(max_width, yax.minimumWidth())
+
+        for pw in self._plot_items:
+            if pw is None:
+                continue
+            pw.getAxis('left').setWidth(max_width)
+        self._do_yaxis_sync = False
+
     # ------------------------------ #
     # Update loop
     # ------------------------------ #
@@ -373,9 +457,78 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
         x = np.nan_to_num(x, nan=0.0)
         return x
     
-    def _compute_spectrogram(self, x: np.ndarray, srate: float) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    def _compute_spectrogram_torch(self, x: np.ndarray, srate: float) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """
-        Compute spectrogram with validation and error handling.
+        Compute spectrogram using PyTorch STFT (GPU-accelerated when available).
+        
+        Args:
+            x: Input signal
+            srate: Sampling rate
+            
+        Returns:
+            Tuple of (frequencies, times, power) or None if computation fails
+        """
+        if not _has_torch or _device is None:
+            return None
+        
+        if x.size == 0:
+            return None
+        if srate < MIN_SRATE:
+            logger.debug(f"Invalid sampling rate: {srate} Hz")
+            return None
+        
+        nperseg = max(MIN_NPERSEG, min(self._nperseg, x.size))
+        noverlap = max(0, min(self._noverlap, nperseg - 1))
+        hop_length = nperseg - noverlap
+        
+        try:
+            # Convert to PyTorch tensor
+            x_tensor = torch.from_numpy(x.astype(np.float32)).to(_device)
+            
+            # Compute STFT
+            # torch.stft returns (batch, freq, time, complex) where complex is (real, imag)
+            # We need to compute power spectral density
+            window = torch.hann_window(nperseg, device=_device)
+            stft_result = torch.stft(
+                x_tensor,
+                n_fft=nperseg,
+                hop_length=hop_length,
+                win_length=nperseg,
+                window=window,
+                center=True,
+                normalized=False,
+                onesided=True,
+                return_complex=True
+            )
+            
+            # Compute power spectral density: |STFT|^2
+            # stft_result is complex, so we compute magnitude squared
+            Sxx = torch.abs(stft_result) ** 2
+            
+            # Convert back to numpy
+            Sxx_np = Sxx.cpu().numpy()
+            
+            # Generate frequency and time arrays to match scipy.signal.spectrogram output
+            # Frequencies: 0 to Nyquist (srate/2), nperseg//2 + 1 points
+            f = np.linspace(0, srate / 2, Sxx_np.shape[0])
+            
+            # Times: based on hop_length and signal length
+            n_frames = Sxx_np.shape[1]
+            t = np.arange(n_frames) * (hop_length / srate)
+            
+            # Convert to dB with safe handling
+            with np.errstate(invalid='ignore', divide='ignore'):
+                Pxx = 10.0 * np.log10(Sxx_np + EPSILON_DB)
+            
+            return (f, t, Pxx)
+            
+        except Exception as e:
+            logger.warning(f"PyTorch spectrogram computation failed: {e}", exc_info=True)
+            return None
+    
+    def _compute_spectrogram_scipy(self, x: np.ndarray, srate: float) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """
+        Compute spectrogram using scipy.signal.spectrogram (CPU fallback).
         
         Args:
             x: Input signal
@@ -411,6 +564,27 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
         
         return (f, t, Pxx)
     
+    def _compute_spectrogram(self, x: np.ndarray, srate: float) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """
+        Compute spectrogram with GPU acceleration when available, CPU fallback otherwise.
+        
+        Args:
+            x: Input signal
+            srate: Sampling rate
+            
+        Returns:
+            Tuple of (frequencies, times, power) or None if computation fails
+        """
+        if self._use_gpu:
+            result = self._compute_spectrogram_torch(x, srate)
+            if result is not None:
+                return result
+            # Fallback to CPU if GPU computation fails
+            logger.debug("GPU spectrogram computation failed, falling back to CPU")
+        
+        # Use CPU fallback
+        return self._compute_spectrogram_scipy(x, srate)
+    
     def _calculate_new_columns(self, src_ix: int, buf) -> int:
         """
         Calculate number of new columns to add based on buffer write index progression.
@@ -428,7 +602,7 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
         if buf_len == 0 or not hasattr(buf, "_write_idx"):
             return 0
         
-        curr_wi = int(buf._write_idx)  # type: ignore
+        curr_wi = int(buf._write_idx)
         prev_wi = state.last_write_index
         
         if prev_wi is None:
@@ -543,107 +717,86 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
         
         return state.locked_levels or (DEFAULT_DB_FLOOR, DEFAULT_DB_CEILING)
     
-    def _render_implot_plot(self, src_ix: int) -> None:
+    def _get_colormap_lut(self) -> np.ndarray:
         """
-        Render ImPlot plot for a specific source.
+        Get colormap lookup table with caching.
         
-        This is called from the ImPlotOpenGLWidget's render callback.
+        Returns:
+            Lookup table array
+        """
+        if self._cached_lut is None or self._cached_color_set != self.color_set:
+            self._cached_lut = self.get_colormap(self.color_set, 256)
+            self._cached_color_set = self.color_set
+        return self._cached_lut
+    
+    def _update_markers(self, src_ix: int, pw, mrk: np.ndarray, mrk_ts: np.ndarray) -> None:
+        """
+        Update markers on the plot.
         
         Args:
             src_ix: Source index
+            pw: Plot widget (unused, kept for compatibility)
+            mrk: Marker array
+            mrk_ts: Marker timestamps
         """
-        if not SLIMGUI_AVAILABLE:
+        # Get plot item and remote view for this source
+        if src_ix >= len(self._plot_items) or src_ix >= len(self._remote_views):
+            return
+        pw = self._plot_items[src_ix]
+        remote_view = self._remote_views[src_ix]
+        
+        # Update expiry threshold
+        if not self._buffers[src_ix]._tvec.size:
             return
         
-        if src_ix >= len(self._source_states):
-            return
-        
-        state = self._source_states[src_ix]
-        
-        # Prepare display heatmap
-        display = self._prepare_display_heatmap(src_ix)
-        if display is None or display.size == 0:
-            return
-        
-        # Get color levels
-        levels = self._update_color_levels(src_ix)
-        min_level, max_level = levels
-        
-        # Get source info for labels
-        if src_ix < len(self._data_sources):
-            src = self._data_sources[src_ix]
-            ch_states = self.chan_states[self.chan_states['src'] == src.identifier]
-            stream_ylabel = json.loads(src.identifier)['name']
-            if 'unit' in ch_states and ch_states['unit'].nunique() == 1:
-                stream_ylabel = stream_ylabel + ' (%s)' % ch_states['unit'].iloc[0]
-        else:
-            stream_ylabel = "Spectrogram"
-        
-        # Determine time range for x-axis
         buf = self._buffers[src_ix]
-        if self.plot_mode == "Scroll":
-            if buf._tvec.size > 0:
-                t_min = float(np.nanmin(buf._tvec))
-                t_max = float(np.nanmax(buf._tvec))
-                if np.isfinite(t_min) and np.isfinite(t_max) and t_max > t_min:
-                    time_start = t_min
-                    time_width = t_max - t_min
+        if hasattr(buf, "_write_idx"):
+            lead_t = float(buf._tvec[buf._write_idx])  # type: ignore
+            self._t_expired = max(lead_t - self._duration, self._t_expired)
+
+        # Remove expired markers
+        # Note: pw.items works via proxy, but isinstance check may need to be done differently
+        # We'll check if there are items and remove expired ones
+        try:
+            items = pw.items
+            if items and len(items) > 0:
+                while (len(self._marker_info) > 0) and (self._marker_info[0].timestamp < self._t_expired):
+                    pop_info = self._marker_info.popleft()
+                    pw.removeItem(pop_info[2])
+                    self._marker_texts_pool.append(pop_info[2])
+        except Exception:
+            # If items access fails, try to remove based on marker_info
+            while (len(self._marker_info) > 0) and (self._marker_info[0].timestamp < self._t_expired):
+                pop_info = self._marker_info.popleft()
+                try:
+                    pw.removeItem(pop_info[2])
+                except Exception:
+                    pass
+                self._marker_texts_pool.append(pop_info[2])
+
+        # Add new markers
+        if mrk.size:
+            b_new = mrk_ts > self._src_last_marker_time[src_ix]
+            for _t, _m in zip(mrk_ts[b_new], mrk[b_new]):
+                if len(self._marker_texts_pool) > 0:
+                    text = self._marker_texts_pool.popleft()
+                    text.setText(_m)
                 else:
-                    time_start = 0.0
-                    time_width = float(self.duration)
-            else:
-                time_start = 0.0
-                time_width = float(self.duration)
-        else:
-            time_start = 0.0
-            time_width = float(self.duration)
-        
-        # Get colormap name
-        colormap_name = self.get_colormap_name(self.color_set)
-        
-        # Begin ImPlot plot
-        plot_title = self._ylabel or stream_ylabel if self.ylabel_as_title else ""
-        if implot.begin_plot(plot_title, (-1, -1)):
-            try:
-                # Set axis labels
-                implot.setup_axis(implot.Axis.X1, label="Time (s)")
-                implot.setup_axis(implot.Axis.Y1, label="Frequency (Hz)")
-                # Set axis ranges
-                implot.setup_axes_limits(implot.Axis.X1, time_start, time_start + time_width, implot.Cond.ALWAYS)
-                implot.setup_axes_limits(implot.Axis.Y1, float(self._fmin_hz), float(self._fmax_hz), implot.Cond.ALWAYS)
-                
-                # Set colormap
-                try:
-                    colormap = getattr(implot, f"colormap_{colormap_name.lower()}", implot.Colormap.VIRIDIS)
-                except AttributeError:
-                    colormap = implot.Colormap.VIRIDIS
-                implot.push_colormap(colormap)
-                
-                try:
-                    # Plot heatmap
-                    # implot.plot_heatmap expects data in row-major order (frequencies x time)
-                    # Our display array is already in this format
-                    # Convert to contiguous array if needed
-                    display_contiguous = np.ascontiguousarray(display, dtype=np.float32)
-                    
-                    # implot.plot_heatmap signature: (label_id, values, scale_min, scale_max, label_fmt, bounds_min, bounds_max, flags)
-                    implot.plot_heatmap(
-                        "Spectrogram",
-                        display_contiguous,  # 2D array (rows x cols), dimensions inferred automatically
-                        min_level,  # scale_min
-                        max_level,  # scale_max
-                        None,  # label_fmt (None for default)
-                        (time_start, float(self._fmin_hz)),  # bounds_min (x, y)
-                        (time_start + time_width, float(self._fmax_hz))  # bounds_max (x, y)
-                    )
-                except Exception as e:
-                    logger.warning(f"Error plotting heatmap: {e}", exc_info=True)
-                finally:
-                    implot.pop_colormap()
-                
-            finally:
-                implot.end_plot()
-    
+                    # Create TextItem in remote process
+                    text = remote_view.pg.TextItem(text=_m, angle=90)  # type: ignore
+                    # Create font in remote process to avoid QGuiApplication warnings
+                    font = remote_view.pg.QtGui.QFont()  # type: ignore
+                    font.setPointSize(int(self.font_size + 2.0))
+                    text.setFont(font)
+
+                # Place at bottom of frequency range
+                text.setPos((_t % self.duration), float(self._fmin_hz))
+                pw.addItem(text)
+                self._marker_info.append(MarkerMap(src_ix, _t, text))
+
+            if np.any(b_new):
+                self._src_last_marker_time[src_ix] = mrk_ts[b_new][-1]
+
     def update_visualization(self, data: np.ndarray, timestamps: np.ndarray) -> None:
         """
         Update visualization with new data.
@@ -655,16 +808,23 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
         if not any([np.any(_) for _ in timestamps[0]]):
             return
 
+        # Get cached LUT
+        lut = self._get_colormap_lut()
+
         for src_ix in range(len(data)):
-            # Get ImPlot widget
-            if src_ix >= len(self._implot_widgets):
+            # Get plot item from remote plot items list
+            if src_ix >= len(self._plot_items):
                 continue
-            implot_widget = self._implot_widgets[src_ix]
-            if implot_widget is None:
+            pw = self._plot_items[src_ix]
+            if pw is None:
                 continue
 
             dat, mrk = data[src_ix]
             ts, mrk_ts = timestamps[src_ix]
+
+            # Align axis label widths if needed
+            if self._do_yaxis_sync:
+                self.sync_y_axes()
 
             # Process spectrogram if buffer has data
             buff_data = self._buffers[src_ix]._data
@@ -673,9 +833,10 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
                 buf = self._buffers[src_ix]
                 state = self._source_states[src_ix]
                 
-                # Check if there's new data to process
+                # Check if there's new data to process (avoid expensive spectrogram computation if no new data)
                 if hasattr(buf, "_write_idx"):
                     curr_write_idx = int(buf._write_idx)  # type: ignore
+                    # Only compute spectrogram if we have new data or haven't processed this source yet
                     has_new_data = (state.last_processed_write_idx is None or 
                                    curr_write_idx != state.last_processed_write_idx)
                 
@@ -708,8 +869,51 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
                                         if hasattr(buf, "_write_idx"):
                                             state.last_processed_write_idx = int(buf._write_idx)  # type: ignore
 
-            # Trigger widget update (this will call _render_implot_plot)
-            implot_widget.update()  # This triggers paintGL
+                # Prepare display heatmap (always update display, even if no new data)
+                display = self._prepare_display_heatmap(src_ix)
+                if display is not None:
+                    # Update color levels
+                    levels = self._update_color_levels(src_ix)
+                    
+                    # Determine time range for x-axis
+                    if self.plot_mode == "Scroll":
+                        # In scroll mode, use actual time range from buffer
+                        if buf._tvec.size > 0:
+                            t_min = float(np.nanmin(buf._tvec))
+                            t_max = float(np.nanmax(buf._tvec))
+                            # Ensure valid range
+                            if np.isfinite(t_min) and np.isfinite(t_max) and t_max > t_min:
+                                time_start = t_min
+                                time_width = t_max - t_min
+                            else:
+                                # Fallback to duration-based range
+                                time_start = 0.0
+                                time_width = float(self.duration)
+                        else:
+                            time_start = 0.0
+                            time_width = float(self.duration)
+                    else:
+                        # In sweep mode, use fixed 0 to duration
+                        time_start = 0.0
+                        time_width = float(self.duration)
+                    
+                    # Update x-axis range
+                    pw.setXRange(time_start, time_start + time_width)
+                    
+                    # Update image with performance optimization: use _callSync='off' for operations that don't need return values
+                    if src_ix < len(self._image_items):
+                        img = self._image_items[src_ix]
+                        if img is not None:
+                            img.setImage(display, levels=levels, autoLevels=False, _callSync='off')
+                            img.setLookupTable(lut, _callSync='off')
+                            img.setRect(pg.QtCore.QRectF(
+                                time_start, float(self._fmin_hz),
+                                time_width,
+                                float(self._fmax_hz - self._fmin_hz)
+                            ), _callSync='off')
+
+            # Update markers
+            self._update_markers(src_ix, pw, mrk, mrk_ts)
 
     # ------------------------------ #
     # Properties
@@ -748,10 +952,17 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
     @fmin_hz.setter
     def fmin_hz(self, value):
         self._fmin_hz = float(value)
-        # Reset source states to recalculate frequency mask
-        for state in self._source_states:
-            state.freq_mask = None
-        self._schedule_reset(reset_channel_labels=False)
+        # Update Y-axis range in-place if plots exist
+        if self._plot_items:
+            for pw in self._plot_items:
+                if pw is not None:
+                    pw.setYRange(self._fmin_hz, self._fmax_hz)
+            # Invalidate frequency mask - will recompute on next update
+            for state in self._source_states:
+                state.freq_mask = None
+        else:
+            # No plots yet, need full reset
+            self._schedule_reset(reset_channel_labels=False)
 
     @property
     def fmax_hz(self):
@@ -760,10 +971,17 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
     @fmax_hz.setter
     def fmax_hz(self, value):
         self._fmax_hz = float(value)
-        # Reset source states to recalculate frequency mask
-        for state in self._source_states:
-            state.freq_mask = None
-        self._schedule_reset(reset_channel_labels=False)
+        # Update Y-axis range in-place if plots exist
+        if self._plot_items:
+            for pw in self._plot_items:
+                if pw is not None:
+                    pw.setYRange(self._fmin_hz, self._fmax_hz)
+            # Invalidate frequency mask - will recompute on next update
+            for state in self._source_states:
+                state.freq_mask = None
+        else:
+            # No plots yet, need full reset
+            self._schedule_reset(reset_channel_labels=False)
 
     @property
     def nperseg(self):
@@ -772,11 +990,18 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
     @nperseg.setter
     def nperseg(self, value):
         self._nperseg = int(value)
-        # Reset source states to recalculate hop size and columns
-        for state in self._source_states:
-            state.hop_size = None
-            state.n_time_cols = None
-        self._schedule_reset(reset_channel_labels=False)
+        # Invalidate state - will recompute with new parameters on next update
+        if self._image_items:
+            for state in self._source_states:
+                state.hop_size = None
+                state.n_time_cols = None
+                state.heatmap = None
+                state.write_index = 0
+                state.last_processed_write_idx = None
+                state.sample_carry = 0
+        else:
+            # No plots yet, need full reset
+            self._schedule_reset(reset_channel_labels=False)
 
     @property
     def noverlap(self):
@@ -785,14 +1010,39 @@ class HeatmapImPlot(RendererDataTimeSeries, ImPlotRenderer):
     @noverlap.setter
     def noverlap(self, value):
         self._noverlap = int(value)
-        # Reset source states to recalculate hop size and columns
-        for state in self._source_states:
-            state.hop_size = None
-            state.n_time_cols = None
-        self._schedule_reset(reset_channel_labels=False)
+        # Invalidate state - will recompute with new parameters on next update
+        if self._image_items:
+            for state in self._source_states:
+                state.hop_size = None
+                state.n_time_cols = None
+                state.heatmap = None
+                state.write_index = 0
+                state.last_processed_write_idx = None
+                state.sample_carry = 0
+        else:
+            # No plots yet, need full reset
+            self._schedule_reset(reset_channel_labels=False)
 
-    def cleanup(self):
-        """Clean up resources."""
-        super().cleanup()
-        # Additional cleanup if needed
+    @RendererDataTimeSeries.auto_scale.setter
+    def auto_scale(self, value):
+        self._requested_auto_scale = value.lower()
+        self._schedule_reset(reset_channel_labels=False)
+    
+    @property
+    def color_set(self):
+        """Get current color set."""
+        return super().color_set
+    
+    @color_set.setter
+    def color_set(self, value):
+        """Set color set and invalidate LUT cache."""
+        super().color_set = value  # type: ignore
+        self._cached_lut = None
+        self._cached_color_set = None
+        # Update image items with new colormap if they exist
+        if self._image_items:
+            lut = self._get_colormap_lut()
+            for img in self._image_items:
+                if img is not None:
+                    img.setLookupTable(lut)
 

@@ -8,9 +8,9 @@ from stream_viewer.renderers.topo_vb import TopoVB
 from stream_viewer.renderers.heatmap_pg import HeatmapPG
 from stream_viewer.renderers.sonify_audio import SonifyAudio
 
-# Try to import HeatmapImPlot (requires slimgui)
+# Try to import HeatmapGPU (requires torch for GPU acceleration, falls back to CPU)
 try:
-    from stream_viewer.renderers.heatmap_implot import HeatmapImPlot
+    from stream_viewer.renderers.heatmap_gpu import HeatmapGPU
 except ImportError:
-    # slimgui not available, HeatmapImPlot will not be available
+    # torch not available, HeatmapGPU will not be available
     pass
