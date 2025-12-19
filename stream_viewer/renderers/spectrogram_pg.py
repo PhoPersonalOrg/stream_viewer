@@ -135,8 +135,15 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
         self._cached_lut: Optional[np.ndarray] = None
         self._cached_color_set: Optional[str] = None
         
+        # Store auto_scale setting (parent class will handle it)
+        self._requested_auto_scale = auto_scale.lower()
+        
+        # Ensure plot_mode is Scroll (remove from kwargs if present to avoid duplicate)
+        kwargs.pop('plot_mode', None)
+        
         # Initialize parent classes
         super().__init__(
+            auto_scale=auto_scale,
             show_chan_labels=show_chan_labels,
             color_set=color_set,
             plot_mode="Scroll",  # Force scroll mode
@@ -180,13 +187,21 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
         last_row = 0
         for src_ix, src in enumerate(self._data_sources):
             ch_states = self.chan_states[self.chan_states['src'] == src.identifier]
-            n_vis_src = ch_states['vis'].sum()
+            
+            # Check if 'vis' column exists
+            if 'vis' in ch_states.columns:
+                visible_channels = ch_states[ch_states['vis']]
+                n_vis_src = ch_states['vis'].sum()
+            else:
+                visible_channels = ch_states
+                n_vis_src = len(ch_states)
+            
             if n_vis_src == 0:
                 continue
             
             # Auto-select first N visible channels if not already selected
             if not self._selected_channels[src_ix]:
-                vis_indices = ch_states[ch_states['vis']].index.tolist()
+                vis_indices = visible_channels.index.tolist()
                 n_select = min(self._max_selected_channels, len(vis_indices))
                 self._selected_channels[src_ix] = set(vis_indices[:n_select])
             
@@ -222,6 +237,9 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
             
             # Create image item for spectrogram
             img = pg.ImageItem(axisOrder='row-major')
+            # Set initial colormap
+            lut = self._get_colormap_lut()
+            img.setLookupTable(lut)
             pw.addItem(img)
             self._image_items[src_ix] = img
         
@@ -247,16 +265,22 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
         Returns:
             List of (index, name, is_selected) tuples
         """
-        if src_ix >= len(self._data_sources):
+        if src_ix >= len(self._data_sources) or len(self.chan_states) == 0:
             return []
         
         src = self._data_sources[src_ix]
         ch_states = self.chan_states[self.chan_states['src'] == src.identifier]
-        visible_channels = ch_states[ch_states['vis']]
+        
+        # Check if 'vis' column exists, if not, assume all channels are visible
+        if 'vis' in ch_states.columns:
+            visible_channels = ch_states[ch_states['vis']]
+        else:
+            visible_channels = ch_states
         
         result = []
+        selected_set = self._selected_channels[src_ix] if src_ix < len(self._selected_channels) else set()
         for idx, row in visible_channels.iterrows():
-            is_selected = idx in self._selected_channels[src_ix]
+            is_selected = idx in selected_set
             result.append((idx, row['name'], is_selected))
         
         return result
@@ -302,9 +326,20 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
         # Get selected channel indices (relative to visible channels in buffer)
         src = self._data_sources[src_ix]
         ch_states = self.chan_states[self.chan_states['src'] == src.identifier]
-        visible_indices = ch_states[ch_states['vis']].index.tolist()
         
-        selected = self._selected_channels.get(src_ix, set()) if src_ix < len(self._selected_channels) else set()
+        # Check if 'vis' column exists, if not, assume all channels are visible
+        if 'vis' in ch_states.columns:
+            visible_channels = ch_states[ch_states['vis']]
+        else:
+            visible_channels = ch_states
+        
+        visible_indices = visible_channels.index.tolist()
+        
+        # Get selected channels - _selected_channels is a list, not a dict
+        if src_ix < len(self._selected_channels):
+            selected = self._selected_channels[src_ix]
+        else:
+            selected = set()
         
         # Map global indices to buffer row indices
         buffer_rows = []
@@ -467,16 +502,6 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
             # Scroll: shift left and append new data on right
             heat[:, :-n_new_cols] = heat[:, n_new_cols:]
             heat[:, -n_new_cols:] = P_new[:, -n_new_cols:]
-        
-        # Update global min/max (excluding floor values)
-        valid_mask = heat > (DEFAULT_DB_FLOOR + 1.0)
-        if np.any(valid_mask):
-            current_min = float(np.min(heat[valid_mask]))
-            current_max = float(np.max(heat[valid_mask]))
-            if np.isfinite(current_min):
-                state.global_min = min(state.global_min, current_min)
-            if np.isfinite(current_max):
-                state.global_max = max(state.global_max, current_max)
     
     def _get_colormap_lut(self) -> np.ndarray:
         """Get cached colormap lookup table."""
@@ -545,16 +570,39 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
             if n_new_cols > 0:
                 self._update_heatmap_scroll(state, P_masked, n_new_cols)
             
-            # Prepare display data
+            # Prepare display data - always update display even if no new columns
             if state.heatmap is None:
                 continue
             
             display = state.heatmap.copy()
             
-            # Determine color levels
-            if state.global_max > state.global_min:
-                levels = (state.global_min, state.global_max)
+            # Ensure display is 2D and has valid shape
+            if display.ndim != 2 or display.size == 0:
+                continue
+            
+            # Compute color levels from current display data
+            # Always use current data range for spectrograms (most appropriate for real-time viewing)
+            # Exclude floor values (NaN/invalid regions)
+            valid_mask = np.isfinite(display) & (display > (DEFAULT_DB_FLOOR + 1.0))
+            
+            if np.any(valid_mask):
+                data_min = float(np.min(display[valid_mask]))
+                data_max = float(np.max(display[valid_mask]))
+                
+                if np.isfinite(data_min) and np.isfinite(data_max) and data_max > data_min:
+                    # Use current data range - this ensures the spectrogram is always visible
+                    levels = (data_min, data_max)
+                    
+                    # Update tracked global min/max for reference (not used for levels)
+                    if state.global_min == DEFAULT_DB_FLOOR or data_min < state.global_min:
+                        state.global_min = data_min
+                    if state.global_max == DEFAULT_DB_CEILING or data_max > state.global_max:
+                        state.global_max = data_max
+                else:
+                    # Degenerate case - use defaults
+                    levels = (DEFAULT_DB_FLOOR, DEFAULT_DB_CEILING)
             else:
+                # No valid data, use defaults
                 levels = (DEFAULT_DB_FLOOR, DEFAULT_DB_CEILING)
             
             # Get time range from buffer
@@ -574,9 +622,10 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
             # Update x-axis range
             pw.setXRange(time_start, time_start + time_width)
             
-            # Update image
-            img.setImage(display, levels=levels, autoLevels=False)
-            img.setLookupTable(lut)
+            # Update image with data, levels, and colormap
+            # Note: setImage with levels and LUT should apply the colormap correctly
+            img.setImage(display, levels=levels, autoLevels=False, lut=lut)
+            # Also set the rect for proper positioning
             img.setRect(pg.QtCore.QRectF(
                 time_start, float(self._fmin_hz),
                 time_width, float(self._fmax_hz - self._fmin_hz)
