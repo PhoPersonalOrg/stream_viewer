@@ -27,10 +27,11 @@ try:
         logger.info("PyTorch GPU acceleration available (CUDA)")
     else:
         logger.info("PyTorch available but using CPU (CUDA not available)")
-except ImportError:
+except (ImportError, OSError, RuntimeError, Exception) as e:
     _has_torch = False
     _device = None
-    logger.info("PyTorch not available, will use CPU fallback (scipy.signal.spectrogram)")
+    logger.warning(f"PyTorch not available or failed to load ({type(e).__name__}: {e}), will use CPU fallback (scipy.signal.spectrogram)")
+
 
 # Constants
 DEFAULT_DB_FLOOR = -120.0  # Default dB value for NaN/invalid data
