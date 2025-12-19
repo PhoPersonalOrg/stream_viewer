@@ -91,12 +91,23 @@ class HeatmapControlPanel(TimeSeriesControl):
         button_widget.setLayout(button_layout)
         self.layout().addWidget(button_widget, row_ix, 0, 1, 2)
         
-        # Re-sync to Present button (only enabled in Scroll mode when manually scrolled)
+        # Re-sync and Disconnect buttons (side by side)
         row_ix += 1
+        button_layout = QtWidgets.QHBoxLayout()
+        
         _resync_btn = QtWidgets.QPushButton("← Re-sync to Present")
         _resync_btn.setObjectName("Resync_Button")
         _resync_btn.setEnabled(False)  # Disabled by default
-        self.layout().addWidget(_resync_btn, row_ix, 0, 1, 2)
+        button_layout.addWidget(_resync_btn)
+        
+        _disconnect_btn = QtWidgets.QPushButton("Disconnect")
+        _disconnect_btn.setObjectName("Disconnect_Button")
+        _disconnect_btn.setEnabled(False)  # Disabled by default
+        button_layout.addWidget(_disconnect_btn)
+        
+        button_widget = QtWidgets.QWidget()
+        button_widget.setLayout(button_layout)
+        self.layout().addWidget(button_widget, row_ix, 0, 1, 2)
         
         self._last_row = row_ix
         
@@ -188,15 +199,26 @@ class HeatmapControlPanel(TimeSeriesControl):
             except TypeError:
                 pass
             _resync_btn.clicked.connect(self._on_resync_clicked)
-            self._update_resync_button_state()
         
-        # Connect to mode changes to update re-sync button state
+        # Disconnect button
+        _disconnect_btn = self.findChild(QtWidgets.QPushButton, name="Disconnect_Button")
+        if _disconnect_btn is not None:
+            try:
+                _disconnect_btn.clicked.disconnect()
+            except TypeError:
+                pass
+            _disconnect_btn.clicked.connect(self._on_disconnect_clicked)
+        
+        # Update button states
+        self._update_sync_button_states()
+        
+        # Connect to mode changes to update button states
         # Note: mode_currentTextChanged is already connected in parent class,
         # so we add our update as an additional connection
         _combo = self.findChild(QtWidgets.QComboBox, name="Mode_ComboBox")
         if _combo is not None:
             # Add our update handler (don't disconnect existing one)
-            _combo.currentTextChanged.connect(self._update_resync_button_state)
+            _combo.currentTextChanged.connect(self._update_sync_button_states)
     
     def _on_fmin_changed(self, value):
         """Handle fmin_hz change - store as pending if different from applied."""
@@ -337,17 +359,31 @@ class HeatmapControlPanel(TimeSeriesControl):
         renderer = self._renderer
         if hasattr(renderer, 'sync_to_present'):
             renderer.sync_to_present()
-            self._update_resync_button_state()
+            self._update_sync_button_states()
     
-    def _update_resync_button_state(self):
-        """Update re-sync button enabled state based on plot mode and sync state."""
+    def _on_disconnect_clicked(self):
+        """Handle disconnect button click - disconnect from realtime."""
+        renderer = self._renderer
+        if hasattr(renderer, 'disconnect_from_realtime'):
+            renderer.disconnect_from_realtime()
+            self._update_sync_button_states()
+    
+    def _update_sync_button_states(self):
+        """Update re-sync and disconnect button enabled states based on plot mode and sync state."""
+        renderer = self._renderer
+        # Only enable in Scroll mode
+        is_scroll_mode = (hasattr(renderer, 'plot_mode') and 
+                         renderer.plot_mode == "Scroll")
+        is_manually_scrolled = (hasattr(renderer, 'is_manually_scrolled') and 
+                               renderer.is_manually_scrolled)
+        
+        # Re-sync button: enabled when in Scroll mode and manually scrolled (disconnected)
         _resync_btn = self.findChild(QtWidgets.QPushButton, name="Resync_Button")
         if _resync_btn is not None:
-            renderer = self._renderer
-            # Only enable in Scroll mode and when manually scrolled
-            is_scroll_mode = (hasattr(renderer, 'plot_mode') and 
-                            renderer.plot_mode == "Scroll")
-            is_manually_scrolled = (hasattr(renderer, 'is_manually_scrolled') and 
-                                   renderer.is_manually_scrolled)
             _resync_btn.setEnabled(is_scroll_mode and is_manually_scrolled)
+        
+        # Disconnect button: enabled when in Scroll mode and NOT manually scrolled (synced)
+        _disconnect_btn = self.findChild(QtWidgets.QPushButton, name="Disconnect_Button")
+        if _disconnect_btn is not None:
+            _disconnect_btn.setEnabled(is_scroll_mode and not is_manually_scrolled)
 

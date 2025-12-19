@@ -469,28 +469,53 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         """
         Notify control panel that sync state has changed.
         
-        This allows the control panel to update the re-sync button state.
+        This allows the control panel to update the re-sync and disconnect button states.
         """
         # Try to find and update the control panel via parent widget
         # The control panel should have a method to update button state
         try:
             parent = self._widget.parent()
             while parent is not None:
-                if hasattr(parent, '_update_resync_button_state'):
-                    parent._update_resync_button_state()  # type: ignore
+                if hasattr(parent, '_update_sync_button_states'):
+                    parent._update_sync_button_states()  # type: ignore
                     break
                 # Also check children
                 for child in parent.findChildren(QtWidgets.QWidget):
-                    if (hasattr(child, '_update_resync_button_state') and 
+                    if (hasattr(child, '_update_sync_button_states') and 
                         hasattr(child, '_renderer') and 
                         child._renderer is self):
-                        child._update_resync_button_state()  # type: ignore
+                        child._update_sync_button_states()  # type: ignore
                         break
                 parent = parent.parent()
         except Exception:
             # If notification fails, it's not critical - button state will update on next access
             pass
 
+    def disconnect_from_realtime(self) -> None:
+        """
+        Manually disconnect from realtime by unlinking x-axes.
+        
+        This method allows users to explicitly disconnect from realtime without
+        needing to scroll first. It sets the manual scroll state and unlinks
+        all x-axes to stop auto-updating.
+        """
+        if self.plot_mode != "Scroll":
+            return
+        
+        # Set manual scroll state
+        self._is_manually_scrolled = True
+        
+        # Unlink all x-axes
+        for plot_item in self._plot_items:
+            if plot_item is not None:
+                try:
+                    plot_item.setXLink(None)
+                except Exception:
+                    pass
+        
+        # Notify control panel to update button states
+        self._notify_sync_state_changed()
+    
     def sync_to_present(self) -> None:
         """
         Re-sync the view to the current time window.
@@ -549,6 +574,9 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             self._last_auto_xrange = (time_start, time_start + time_width)
         finally:
             self._suppress_range_signal = False
+        
+        # Notify control panel to update button states
+        self._notify_sync_state_changed()
 
     # ------------------------------ #
     # Update loop
@@ -744,7 +772,7 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         
         return display
     
-    def _update_color_levels(self, src_ix: int) -> Tuple[float, float]:
+    def _update_color_levels(self, src_ix: int, display: Optional[np.ndarray] = None) -> Tuple[float, float]:
         """
         Update and return color levels for display.
         
@@ -754,26 +782,47 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         
         Args:
             src_ix: Source index
+            display: Optional display array (with NaNs replaced) to use for min/max calculation.
+                    If not provided, will prepare display array from heatmap.
             
         Returns:
             Tuple of (min_level, max_level)
         """
+        # Prepare display array if not provided
+        if display is None:
+            display = self._prepare_display_heatmap(src_ix)
+        
+        # Always calculate/update global min/max from display data (in dB units)
+        # This ensures we have valid dB-range values regardless of auto_scale setting
+        if display is not None and np.isfinite(display).any():
+            # Exclude DEFAULT_DB_FLOOR values from min/max calculation
+            # These are placeholder values for NaN regions and shouldn't affect normalization
+            valid_mask = display > (DEFAULT_DB_FLOOR + 1.0)  # Add small tolerance for floating point
+            if np.any(valid_mask):
+                hmin = float(np.min(display[valid_mask]))
+                hmax = float(np.max(display[valid_mask]))
+                if np.isfinite(hmin) and np.isfinite(hmax) and (hmax > hmin):
+                    # Update global min (never increase) and max (never decrease)
+                    if self._global_min is None or hmin < self._global_min:
+                        self._global_min = hmin
+                    if self._global_max is None or hmax > self._global_max:
+                        self._global_max = hmax
+        
+        # When auto_scale is 'none', check if limits are in dB range
+        # If limits are outside reasonable dB range (likely in raw power units), use global min/max
         if self._auto_scale == 'none':
-            return (float(self.lower_limit), float(self.upper_limit))
+            # Check if limits are in reasonable dB range (dB values are typically negative, < 0)
+            # If limits are positive or very large, they're likely in raw power units, not dB
+            limit_min = float(self.lower_limit)
+            limit_max = float(self.upper_limit)
+            
+            # If limits look like they're in raw power units (positive, large values), use global min/max
+            if (limit_min > 0 or limit_max > 100) and (self._global_min is not None and self._global_max is not None):
+                return (self._global_min, self._global_max)
+            # Otherwise, use the limits as-is (assuming they're in dB)
+            return (limit_min, limit_max)
         
-        # Auto-scale: use global min/max across all sources
-        # If global values not yet set, initialize from current heatmap
-        state = self._source_states[src_ix]
-        if state.heatmap is not None and np.isfinite(state.heatmap).any():
-            hmin = float(np.nanmin(state.heatmap))
-            hmax = float(np.nanmax(state.heatmap))
-            if np.isfinite(hmin) and np.isfinite(hmax) and (hmax > hmin):
-                # Update global min (never increase) and max (never decrease)
-                if self._global_min is None or hmin < self._global_min:
-                    self._global_min = hmin
-                if self._global_max is None or hmax > self._global_max:
-                    self._global_max = hmax
-        
+        # Auto-scale mode: always use global min/max
         # Return global values if available, otherwise fallback to defaults
         if self._global_min is not None and self._global_max is not None:
             return (self._global_min, self._global_max)
@@ -928,17 +977,6 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                                         if new_cols > 0:
                                             self._update_heatmap_columns(src_ix, P_use, new_cols)
                                         
-                                        # Update global min/max from current heatmap (persistent tracking)
-                                        if state.heatmap is not None and np.isfinite(state.heatmap).any():
-                                            hmin = float(np.nanmin(state.heatmap))
-                                            hmax = float(np.nanmax(state.heatmap))
-                                            if np.isfinite(hmin) and np.isfinite(hmax) and (hmax > hmin):
-                                                # Update global min (never increase) and max (never decrease)
-                                                if self._global_min is None or hmin < self._global_min:
-                                                    self._global_min = hmin
-                                                if self._global_max is None or hmax > self._global_max:
-                                                    self._global_max = hmax
-                                        
                                         # Mark this write index as processed
                                         if hasattr(buf, "_write_idx"):
                                             state.last_processed_write_idx = int(buf._write_idx)  # type: ignore
@@ -946,8 +984,9 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                 # Prepare display heatmap (always update display, even if no new data)
                 display = self._prepare_display_heatmap(src_ix)
                 if display is not None:
-                    # Update color levels
-                    levels = self._update_color_levels(src_ix)
+                    # Update color levels using display array (after NaN replacement)
+                    # This ensures global min/max are calculated from the same data that will be displayed
+                    levels = self._update_color_levels(src_ix, display=display)
                     
                     # Determine time range for x-axis
                     if self.plot_mode == "Scroll":
