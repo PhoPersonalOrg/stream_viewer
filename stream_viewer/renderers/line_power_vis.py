@@ -115,6 +115,10 @@ class LinePowerVis(RendererDataTimeSeries, PGRenderer):
         # Cache for filter coefficients (avoid recomputing each frame)
         self._filter_cache = {}
         self._last_srate = None
+        
+        # Track y-axis ranges for each band to prevent continuous rescaling
+        self._y_ranges = {}  # band_idx -> (min, max)
+        self._range_update_counter = 0  # Counter to throttle range updates
 
         super().__init__(
             auto_scale=auto_scale,
@@ -135,6 +139,8 @@ class LinePowerVis(RendererDataTimeSeries, PGRenderer):
         self._ci_lower_curves = []
         self._filter_cache = {}
         self._last_srate = None
+        self._y_ranges = {}  # Reset y-axis ranges
+        self._range_update_counter = 0
 
         if len(self.chan_states) == 0 or len(self._data_sources) == 0:
             return
@@ -160,11 +166,16 @@ class LinePowerVis(RendererDataTimeSeries, PGRenderer):
             pw.showGrid(x=True, y=True, alpha=0.3)
             pw.setXRange(0, self.duration)
 
-            # Set y-range based on limits or enable auto-range
+            # Set y-range based on limits (disable auto-range to prevent jerky updates)
             if self.auto_scale != 'none':
-                pw.enableAutoRange(axis='y')
+                # Set initial range from limits, will be updated from data in update_visualization
+                pw.setYRange(self.lower_limit, self.upper_limit)
+                pw.disableAutoRange(axis='y')  # Disable continuous auto-scaling
+                self._y_ranges[band_idx] = (self.lower_limit, self.upper_limit)
             else:
                 pw.setYRange(self.lower_limit, self.upper_limit)
+                pw.disableAutoRange(axis='y')
+                self._y_ranges[band_idx] = (self.lower_limit, self.upper_limit)
 
             pw.getAxis("bottom").setTickFont(font)
             pw.getAxis("left").setTickFont(font)
@@ -451,6 +462,43 @@ class LinePowerVis(RendererDataTimeSeries, PGRenderer):
 
                 self._ci_lower_curves[band_idx].setData(display_t, gfp - ci_low)
                 self._ci_upper_curves[band_idx].setData(display_t, gfp + ci_up)
+            
+            # Update y-axis range when auto_scale is enabled (but only when range changes significantly)
+            if self.auto_scale != 'none' and band_idx < len(self._plot_widgets):
+                # Compute current data range
+                if np.isfinite(gfp).any():
+                    data_min = float(np.nanmin(gfp))
+                    data_max = float(np.nanmax(gfp))
+                    
+                    # Add small padding (5% on each side)
+                    data_range = data_max - data_min
+                    if data_range > 0:
+                        padding = data_range * 0.05
+                        new_min = data_min - padding
+                        new_max = data_max + padding
+                    else:
+                        # Handle case where all values are the same
+                        new_min = data_min - abs(data_min) * 0.1 if data_min != 0 else -1.0
+                        new_max = data_max + abs(data_max) * 0.1 if data_max != 0 else 1.0
+                    
+                    # Only update if range has changed significantly (more than 10% change)
+                    if band_idx in self._y_ranges:
+                        old_min, old_max = self._y_ranges[band_idx]
+                        old_range = old_max - old_min
+                        new_range = new_max - new_min
+                        
+                        # Check if min or max changed significantly
+                        min_change = abs(new_min - old_min) / max(abs(old_range), 1e-10)
+                        max_change = abs(new_max - old_max) / max(abs(old_range), 1e-10)
+                        
+                        if min_change > 0.1 or max_change > 0.1 or old_range == 0:
+                            # Significant change, update the range
+                            self._plot_widgets[band_idx].setYRange(new_min, new_max)
+                            self._y_ranges[band_idx] = (new_min, new_max)
+                    else:
+                        # First time, set the range
+                        self._plot_widgets[band_idx].setYRange(new_min, new_max)
+                        self._y_ranges[band_idx] = (new_min, new_max)
 
     # ------------------------------ #
     # Properties
