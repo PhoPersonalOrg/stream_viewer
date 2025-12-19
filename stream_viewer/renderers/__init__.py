@@ -6,6 +6,7 @@ from stream_viewer.renderers.line_power_vis import LinePowerVis
 from stream_viewer.renderers.resolver import load_renderer, list_renderers, get_kwargs_from_settings
 from stream_viewer.renderers.topo_vb import TopoVB
 from stream_viewer.renderers.heatmap_pg import HeatmapPG
+from stream_viewer.renderers.spectrogram_pg import SpectrogramPG
 from stream_viewer.renderers.sonify_audio import SonifyAudio
 
 # Try to import HeatmapGPU (requires torch for GPU acceleration, falls back to CPU)

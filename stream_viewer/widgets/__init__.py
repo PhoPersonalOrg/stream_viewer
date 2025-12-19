@@ -6,5 +6,6 @@ from stream_viewer.widgets.stream_info import StreamInfoListView, StreamStatusQM
 from stream_viewer.widgets.bar_ctrl import BarControlPanel
 from stream_viewer.widgets.time_series import TimeSeriesControl
 from stream_viewer.widgets.heatmap_ctrl import HeatmapControlPanel
+from stream_viewer.widgets.spectrogram_ctrl import SpectrogramControlPanel
 from stream_viewer.widgets.sonify_ctrl import SonifyControlPanel
 from stream_viewer.widgets.line_power_ctrl import LinePowerControlPanel
