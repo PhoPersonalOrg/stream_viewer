@@ -140,6 +140,9 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         # Cached LUT for performance
         self._cached_lut: Optional[np.ndarray] = None
         self._cached_color_set: Optional[str] = None
+        # Global min/max tracking for normalization across all sources
+        self._global_min: Optional[float] = None
+        self._global_max: Optional[float] = None
         
         # Debounce timer for property changes
         self._reset_timer = pg.QtCore.QTimer()
@@ -163,6 +166,10 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         # Cancel any pending debounced resets to avoid double resets
         self._reset_timer.stop()
         self._pending_reset = {'reset_channel_labels': False}
+        
+        # Reset global min/max tracking
+        self._global_min = None
+        self._global_max = None
         
         # Clear container layout - remove all RemoteGraphicsView widgets
         layout = self._widget.layout()
@@ -580,29 +587,37 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         """
         Update and return color levels for display.
         
+        Uses global min/max across all sources when auto_scale is enabled
+        for consistent normalization. Global values persist and never
+        decrease (max) or increase (min) to maintain stable scaling.
+        
         Args:
             src_ix: Source index
             
         Returns:
             Tuple of (min_level, max_level)
         """
-        state = self._source_states[src_ix]
-        
         if self._auto_scale == 'none':
             return (float(self.lower_limit), float(self.upper_limit))
         
-        # Auto-scale: lock levels from current heatmap
-        if state.locked_levels is None:
-            if state.heatmap is not None and np.isfinite(state.heatmap).any():
-                hmin = float(np.nanmin(state.heatmap))
-                hmax = float(np.nanmax(state.heatmap))
-                if np.isfinite(hmin) and np.isfinite(hmax) and (hmax > hmin):
-                    state.locked_levels = (hmin, hmax)
-                    return state.locked_levels
-            # Fallback to defaults
-            state.locked_levels = (DEFAULT_DB_FLOOR, DEFAULT_DB_CEILING)
+        # Auto-scale: use global min/max across all sources
+        # If global values not yet set, initialize from current heatmap
+        state = self._source_states[src_ix]
+        if state.heatmap is not None and np.isfinite(state.heatmap).any():
+            hmin = float(np.nanmin(state.heatmap))
+            hmax = float(np.nanmax(state.heatmap))
+            if np.isfinite(hmin) and np.isfinite(hmax) and (hmax > hmin):
+                # Update global min (never increase) and max (never decrease)
+                if self._global_min is None or hmin < self._global_min:
+                    self._global_min = hmin
+                if self._global_max is None or hmax > self._global_max:
+                    self._global_max = hmax
         
-        return state.locked_levels or (DEFAULT_DB_FLOOR, DEFAULT_DB_CEILING)
+        # Return global values if available, otherwise fallback to defaults
+        if self._global_min is not None and self._global_max is not None:
+            return (self._global_min, self._global_max)
+        else:
+            return (DEFAULT_DB_FLOOR, DEFAULT_DB_CEILING)
     
     def _get_colormap_lut(self) -> np.ndarray:
         """
@@ -751,6 +766,17 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                                         # Update heatmap with new columns
                                         if new_cols > 0:
                                             self._update_heatmap_columns(src_ix, P_use, new_cols)
+                                        
+                                        # Update global min/max from current heatmap (persistent tracking)
+                                        if state.heatmap is not None and np.isfinite(state.heatmap).any():
+                                            hmin = float(np.nanmin(state.heatmap))
+                                            hmax = float(np.nanmax(state.heatmap))
+                                            if np.isfinite(hmin) and np.isfinite(hmax) and (hmax > hmin):
+                                                # Update global min (never increase) and max (never decrease)
+                                                if self._global_min is None or hmin < self._global_min:
+                                                    self._global_min = hmin
+                                                if self._global_max is None or hmax > self._global_max:
+                                                    self._global_max = hmax
                                         
                                         # Mark this write index as processed
                                         if hasattr(buf, "_write_idx"):
