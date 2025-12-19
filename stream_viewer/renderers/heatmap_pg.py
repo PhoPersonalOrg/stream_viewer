@@ -144,6 +144,11 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         self._global_min: Optional[float] = None
         self._global_max: Optional[float] = None
         
+        # Scroll-back and re-sync state tracking
+        self._is_manually_scrolled: bool = False
+        self._last_auto_xrange: Optional[Tuple[float, float]] = None
+        self._suppress_range_signal: bool = False  # Flag to suppress signal during programmatic updates
+        
         # Debounce timer for property changes
         self._reset_timer = pg.QtCore.QTimer()
         self._reset_timer.setSingleShot(True)
@@ -170,6 +175,11 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         # Reset global min/max tracking
         self._global_min = None
         self._global_max = None
+        
+        # Reset scroll-back and re-sync state
+        self._is_manually_scrolled = False
+        self._last_auto_xrange = None
+        self._suppress_range_signal = False
         
         # Clear container layout - remove all RemoteGraphicsView widgets
         layout = self._widget.layout()
@@ -269,8 +279,15 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             pw.addItem(img)
             self._image_items[src_ix] = img
 
-            # Y axis range (frequency)
+            # Y axis range (frequency) - lock to frequency range
             pw.setYRange(self._fmin_hz, self._fmax_hz)
+            pw.disableAutoRange(axis='y')  # Disable y-axis auto-scaling
+            # Lock y-axis limits to prevent scrolling/zooming
+            pw.setLimits(yMin=self._fmin_hz, yMax=self._fmax_hz, minYRange=self._fmax_hz - self._fmin_hz, maxYRange=self._fmax_hz - self._fmin_hz)
+            # Disable y-axis mouse interactions (only allow x-axis scrolling/zooming)
+            vb = pw.getViewBox()
+            if vb is not None:
+                vb.setMouseEnabled(x=True, y=False)  # Only allow x-axis mouse interactions
 
         # Bottom axis label and link x-axes manually
         # Find the last non-None plot item (bottom one)
@@ -287,6 +304,14 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             for plot_item in self._plot_items:
                 if plot_item is not None and plot_item is not bottom_plot_item:
                     plot_item.setXLink(bottom_plot_item)
+            
+            # Connect signal to detect manual x-axis range changes (only in Scroll mode)
+            # We connect to the bottom plot item since all others are linked to it
+            try:
+                bottom_plot_item.sigRangeChanged.connect(self._on_xrange_changed)
+            except Exception:
+                # If signal connection fails (e.g., proxy issues), log and continue
+                logger.debug("Could not connect sigRangeChanged signal for scroll detection")
 
         # Set layout spacing
         layout.setSpacing(int(10. if self.ylabel_as_title else 0.))
@@ -388,6 +413,142 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                 continue
             pw.getAxis('left').setWidth(max_width)
         self._do_yaxis_sync = False
+
+    def _on_xrange_changed(self) -> None:
+        """
+        Handle x-axis range changes to detect manual scrolling.
+        
+        This method is called when the user manually changes the x-axis range.
+        It detects if the change is manual (not programmatic) and triggers de-sync.
+        """
+        # Only handle in Scroll mode
+        if self.plot_mode != "Scroll":
+            return
+        
+        # Suppress signal during programmatic updates
+        if self._suppress_range_signal:
+            return
+        
+        # Get current x-axis range from bottom plot item
+        bottom_plot_item = None
+        for plot_item in reversed(self._plot_items):
+            if plot_item is not None:
+                bottom_plot_item = plot_item
+                break
+        
+        if bottom_plot_item is None:
+            return
+        
+        try:
+            current_range = bottom_plot_item.viewRange()[0]  # [x_min, x_max]
+            current_xmin, current_xmax = float(current_range[0]), float(current_range[1])
+        except Exception:
+            return
+        
+        # Check if this is a manual change (different from last auto-update)
+        if self._last_auto_xrange is not None:
+            last_xmin, last_xmax = self._last_auto_xrange
+            # Use small tolerance for floating point comparison
+            tolerance = 0.01
+            if (abs(current_xmin - last_xmin) > tolerance or 
+                abs(current_xmax - last_xmax) > tolerance):
+                # Manual change detected - de-sync
+                if not self._is_manually_scrolled:
+                    self._is_manually_scrolled = True
+                    # Unlink x-axes
+                    for plot_item in self._plot_items:
+                        if plot_item is not None:
+                            try:
+                                plot_item.setXLink(None)
+                            except Exception:
+                                pass
+                    # Notify control panel to enable re-sync button
+                    self._notify_sync_state_changed()
+
+    def _notify_sync_state_changed(self) -> None:
+        """
+        Notify control panel that sync state has changed.
+        
+        This allows the control panel to update the re-sync button state.
+        """
+        # Try to find and update the control panel via parent widget
+        # The control panel should have a method to update button state
+        try:
+            parent = self._widget.parent()
+            while parent is not None:
+                if hasattr(parent, '_update_resync_button_state'):
+                    parent._update_resync_button_state()  # type: ignore
+                    break
+                # Also check children
+                for child in parent.findChildren(QtWidgets.QWidget):
+                    if (hasattr(child, '_update_resync_button_state') and 
+                        hasattr(child, '_renderer') and 
+                        child._renderer is self):
+                        child._update_resync_button_state()  # type: ignore
+                        break
+                parent = parent.parent()
+        except Exception:
+            # If notification fails, it's not critical - button state will update on next access
+            pass
+
+    def sync_to_present(self) -> None:
+        """
+        Re-sync the view to the current time window.
+        
+        This method re-links all x-axes and updates the view to show the current
+        time window, effectively catching up to the present time.
+        """
+        if self.plot_mode != "Scroll":
+            return
+        
+        # Reset manual scroll state
+        self._is_manually_scrolled = False
+        self._suppress_range_signal = True
+        
+        try:
+            # Find bottom plot item
+            bottom_plot_item = None
+            for plot_item in reversed(self._plot_items):
+                if plot_item is not None:
+                    bottom_plot_item = plot_item
+                    break
+            
+            if bottom_plot_item is None:
+                return
+            
+            # Re-link all x-axes to bottom plot
+            for plot_item in self._plot_items:
+                if plot_item is not None and plot_item is not bottom_plot_item:
+                    try:
+                        plot_item.setXLink(bottom_plot_item)
+                    except Exception:
+                        pass
+            
+            # Update x-axis range to current time window
+            # Get time range from first available buffer
+            if len(self._buffers) > 0:
+                buf = self._buffers[0]
+                if buf._tvec.size > 0:
+                    t_min = float(np.nanmin(buf._tvec))
+                    t_max = float(np.nanmax(buf._tvec))
+                    if np.isfinite(t_min) and np.isfinite(t_max) and t_max > t_min:
+                        time_start = t_min
+                        time_width = t_max - t_min
+                    else:
+                        time_start = 0.0
+                        time_width = float(self.duration)
+                else:
+                    time_start = 0.0
+                    time_width = float(self.duration)
+            else:
+                time_start = 0.0
+                time_width = float(self.duration)
+            
+            # Update x-axis range
+            bottom_plot_item.setXRange(time_start, time_start + time_width)
+            self._last_auto_xrange = (time_start, time_start + time_width)
+        finally:
+            self._suppress_range_signal = False
 
     # ------------------------------ #
     # Update loop
@@ -810,8 +971,24 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                         time_start = 0.0
                         time_width = float(self.duration)
                     
-                    # Update x-axis range
-                    pw.setXRange(time_start, time_start + time_width)
+                    # Update x-axis range only if not manually scrolled
+                    # Find bottom plot item (the one all others are linked to)
+                    bottom_plot_item = None
+                    for plot_item in reversed(self._plot_items):
+                        if plot_item is not None:
+                            bottom_plot_item = plot_item
+                            break
+                    
+                    # Only update x-axis range for bottom plot item (others are linked)
+                    if pw is bottom_plot_item and not self._is_manually_scrolled:
+                        # Suppress signal during programmatic update
+                        self._suppress_range_signal = True
+                        try:
+                            pw.setXRange(time_start, time_start + time_width)
+                            # Store the auto-update range for comparison
+                            self._last_auto_xrange = (time_start, time_start + time_width)
+                        finally:
+                            self._suppress_range_signal = False
                     
                     # Update image with performance optimization: use _callSync='off' for operations that don't need return values
                     if src_ix < len(self._image_items):
@@ -865,11 +1042,13 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     @fmin_hz.setter
     def fmin_hz(self, value):
         self._fmin_hz = float(value)
-        # Update Y-axis range in-place if plots exist
+        # Update Y-axis range and limits in-place if plots exist
         if self._plot_items:
             for pw in self._plot_items:
                 if pw is not None:
                     pw.setYRange(self._fmin_hz, self._fmax_hz)
+                    # Update y-axis limits to lock the range
+                    pw.setLimits(yMin=self._fmin_hz, yMax=self._fmax_hz, minYRange=self._fmax_hz - self._fmin_hz, maxYRange=self._fmax_hz - self._fmin_hz)
             # Invalidate frequency mask - will recompute on next update
             for state in self._source_states:
                 state.freq_mask = None
@@ -884,11 +1063,13 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     @fmax_hz.setter
     def fmax_hz(self, value):
         self._fmax_hz = float(value)
-        # Update Y-axis range in-place if plots exist
+        # Update Y-axis range and limits in-place if plots exist
         if self._plot_items:
             for pw in self._plot_items:
                 if pw is not None:
                     pw.setYRange(self._fmin_hz, self._fmax_hz)
+                    # Update y-axis limits to lock the range
+                    pw.setLimits(yMin=self._fmin_hz, yMax=self._fmax_hz, minYRange=self._fmax_hz - self._fmin_hz, maxYRange=self._fmax_hz - self._fmin_hz)
             # Invalidate frequency mask - will recompute on next update
             for state in self._source_states:
                 state.freq_mask = None
@@ -940,6 +1121,30 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     def auto_scale(self, value):
         self._requested_auto_scale = value.lower()
         self._schedule_reset(reset_channel_labels=False)
+    
+    @property
+    def is_manually_scrolled(self) -> bool:
+        """Get whether the view is currently manually scrolled (de-synced)."""
+        return self._is_manually_scrolled
+    
+    @property
+    def plot_mode(self):
+        """Get current plot mode."""
+        return self._plot_mode
+    
+    @plot_mode.setter
+    def plot_mode(self, value):
+        """Override plot_mode setter to handle sync state on mode changes."""
+        old_mode = self._plot_mode
+        # Set the mode and call reset (same as parent behavior)
+        self._plot_mode = value
+        self.reset(reset_channel_labels=False)
+        
+        # Reset sync state when mode changes
+        if old_mode != value:
+            self._is_manually_scrolled = False
+            self._last_auto_xrange = None
+            self._suppress_range_signal = False
     
     @property
     def color_set(self):

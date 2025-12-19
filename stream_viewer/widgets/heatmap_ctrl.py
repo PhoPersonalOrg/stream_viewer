@@ -91,6 +91,13 @@ class HeatmapControlPanel(TimeSeriesControl):
         button_widget.setLayout(button_layout)
         self.layout().addWidget(button_widget, row_ix, 0, 1, 2)
         
+        # Re-sync to Present button (only enabled in Scroll mode when manually scrolled)
+        row_ix += 1
+        _resync_btn = QtWidgets.QPushButton("← Re-sync to Present")
+        _resync_btn.setObjectName("Resync_Button")
+        _resync_btn.setEnabled(False)  # Disabled by default
+        self.layout().addWidget(_resync_btn, row_ix, 0, 1, 2)
+        
         self._last_row = row_ix
         
     def reset_widgets(self, renderer):
@@ -172,6 +179,24 @@ class HeatmapControlPanel(TimeSeriesControl):
                 pass
             _revert_btn.clicked.connect(self._on_revert_clicked)
             _revert_btn.setEnabled(False)
+        
+        # Re-sync button
+        _resync_btn = self.findChild(QtWidgets.QPushButton, name="Resync_Button")
+        if _resync_btn is not None:
+            try:
+                _resync_btn.clicked.disconnect()
+            except TypeError:
+                pass
+            _resync_btn.clicked.connect(self._on_resync_clicked)
+            self._update_resync_button_state()
+        
+        # Connect to mode changes to update re-sync button state
+        # Note: mode_currentTextChanged is already connected in parent class,
+        # so we add our update as an additional connection
+        _combo = self.findChild(QtWidgets.QComboBox, name="Mode_ComboBox")
+        if _combo is not None:
+            # Add our update handler (don't disconnect existing one)
+            _combo.currentTextChanged.connect(self._update_resync_button_state)
     
     def _on_fmin_changed(self, value):
         """Handle fmin_hz change - store as pending if different from applied."""
@@ -306,4 +331,23 @@ class HeatmapControlPanel(TimeSeriesControl):
         # Clear pending values
         self._pending_values = {}
         self._update_button_states()
+    
+    def _on_resync_clicked(self):
+        """Handle re-sync button click - re-sync view to present time."""
+        renderer = self._renderer
+        if hasattr(renderer, 'sync_to_present'):
+            renderer.sync_to_present()
+            self._update_resync_button_state()
+    
+    def _update_resync_button_state(self):
+        """Update re-sync button enabled state based on plot mode and sync state."""
+        _resync_btn = self.findChild(QtWidgets.QPushButton, name="Resync_Button")
+        if _resync_btn is not None:
+            renderer = self._renderer
+            # Only enable in Scroll mode and when manually scrolled
+            is_scroll_mode = (hasattr(renderer, 'plot_mode') and 
+                            renderer.plot_mode == "Scroll")
+            is_manually_scrolled = (hasattr(renderer, 'is_manually_scrolled') and 
+                                   renderer.is_manually_scrolled)
+            _resync_btn.setEnabled(is_scroll_mode and is_manually_scrolled)
 
