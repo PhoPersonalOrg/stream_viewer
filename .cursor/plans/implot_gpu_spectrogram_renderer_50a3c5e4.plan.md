@@ -246,5 +246,3 @@ Verify compatibility or create `HeatmapImPlotControlPanel` if needed.
 **Risk**: OpenGL context sharing issues between Qt and ImPlot
 
 - **Mitigation**: Research slimgui Qt integration examples, test thoroughly
-
-**Risk**: Performance may not improve significantly

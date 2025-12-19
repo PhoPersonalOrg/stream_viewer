@@ -123,4 +123,3 @@ except ImportError:
 ## Benefits
 
 - GPU acceleration for real-time spectrogram computation
-- Graceful degradation to CPU when GPU unavailable
