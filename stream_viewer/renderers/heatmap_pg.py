@@ -148,6 +148,7 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         self._is_manually_scrolled: bool = False
         self._last_auto_xrange: Optional[Tuple[float, float]] = None
         self._suppress_range_signal: bool = False  # Flag to suppress signal during programmatic updates
+        self._range_changed_connection = None  # Store signal connection for cleanup
         
         # Debounce timer for property changes
         self._reset_timer = pg.QtCore.QTimer()
@@ -180,6 +181,14 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         self._is_manually_scrolled = False
         self._last_auto_xrange = None
         self._suppress_range_signal = False
+        
+        # Disconnect signal connection before deleting widgets to prevent RuntimeError
+        if self._range_changed_connection is not None:
+            try:
+                self._range_changed_connection.disconnect()
+            except Exception:
+                pass  # Connection may already be disconnected or object deleted
+            self._range_changed_connection = None
         
         # Clear container layout - remove all RemoteGraphicsView widgets
         layout = self._widget.layout()
@@ -307,11 +316,24 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             
             # Connect signal to detect manual x-axis range changes (only in Scroll mode)
             # We connect to the bottom plot item since all others are linked to it
+            # Note: Connecting bound methods across process boundaries can fail due to pickling issues
+            # We use a lambda wrapper to avoid pickling the bound method directly
             try:
-                bottom_plot_item.sigRangeChanged.connect(self._on_xrange_changed)
-            except Exception:
-                # If signal connection fails (e.g., proxy issues), log and continue
-                logger.debug("Could not connect sigRangeChanged signal for scroll detection")
+                # Use a lambda that captures self to avoid pickling bound method
+                # The lambda itself can be pickled, and we'll check self inside the callback
+                def range_changed_wrapper():
+                    # Check if self still exists and method is callable
+                    if hasattr(self, '_on_xrange_changed'):
+                        try:
+                            self._on_xrange_changed()
+                        except Exception as e:
+                            logger.debug(f"Error in xrange changed callback: {e}")
+                
+                self._range_changed_connection = bottom_plot_item.sigRangeChanged.connect(range_changed_wrapper)
+            except Exception as e:
+                # If signal connection fails (e.g., proxy/pickling issues), log and continue
+                logger.debug(f"Could not connect sigRangeChanged signal for scroll detection: {e}")
+                self._range_changed_connection = None
 
         # Set layout spacing
         layout.setSpacing(int(10. if self.ylabel_as_title else 0.))
