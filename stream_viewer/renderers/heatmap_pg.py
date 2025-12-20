@@ -9,6 +9,8 @@ import pyqtgraph as pg
 from pyqtgraph.widgets.RemoteGraphicsView import RemoteGraphicsView
 from scipy import signal
 from typing import Optional, Tuple, TYPE_CHECKING
+import os
+from pathlib import Path
 
 if TYPE_CHECKING:
     from stream_viewer.buffers.stream_data_buffers import TimeSeriesBuffer
@@ -18,6 +20,25 @@ from stream_viewer.renderers.display.pyqtgraph import PGRenderer
 
 
 logger = logging.getLogger(__name__)
+
+# Debug logging helper
+DEBUG_LOG_PATH = Path(__file__).parent.parent.parent / '.cursor' / 'debug.log'
+def _debug_log(session_id, run_id, hypothesis_id, location, message, data):
+    try:
+        import json as json_lib
+        log_entry = {
+            "sessionId": session_id,
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(__import__('time').time() * 1000)
+        }
+        with open(DEBUG_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(json_lib.dumps(log_entry) + '\n')
+    except Exception:
+        pass
 
 # Constants
 DEFAULT_DB_FLOOR = -120.0  # Default dB value for NaN/invalid data
@@ -38,9 +59,9 @@ class SourceState:
     hop_size: Optional[int] = None
     write_index: int = 0
     locked_levels: Optional[Tuple[float, float]] = None
-    last_write_index: Optional[int] = None
+    last_write_index: Optional[float] = None  # Write index (int in Sweep mode) or timestamp (float in Scroll mode)
     sample_carry: int = 0
-    last_processed_write_idx: Optional[int] = None  # Track last processed write index
+    last_processed_write_idx: Optional[float] = None  # Track last processed write index (int in Sweep mode) or timestamp (float in Scroll mode)
     
     def reset(self):
         """Reset all state to initial values."""
@@ -670,7 +691,7 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
     
     def _calculate_new_columns(self, src_ix: int, buf) -> int:
         """
-        Calculate number of new columns to add based on buffer write index progression.
+        Calculate number of new columns to add based on buffer write index progression (Sweep) or timestamp progression (Scroll).
         
         Args:
             src_ix: Source index
@@ -679,28 +700,103 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         Returns:
             Number of new columns to add
         """
+        # #region agent log
+        _debug_log('debug-session', 'run1', 'A', f'{__file__}:{671}', 'calculate_new_columns entry', {
+            'src_ix': src_ix, 'plot_mode': self.plot_mode, 'buf_len': int(buf._data.shape[1]) if buf._data.ndim == 2 else 0,
+            'has_write_idx': hasattr(buf, "_write_idx")
+        })
+        # #endregion
         state = self._source_states[src_ix]
         
         buf_len = int(buf._data.shape[1]) if buf._data.ndim == 2 else 0
-        if buf_len == 0 or not hasattr(buf, "_write_idx"):
+        if buf_len == 0:
+            # #region agent log
+            _debug_log('debug-session', 'run1', 'A', f'{__file__}:{686}', 'calculate_new_columns early return 0', {
+                'reason': 'buf_len==0'
+            })
+            # #endregion
             return 0
         
-        curr_wi = int(buf._write_idx)
-        prev_wi = state.last_write_index
-        
-        if prev_wi is None:
-            state.last_write_index = curr_wi
-            return 0
-        
-        delta = (curr_wi - prev_wi) % buf_len
-        state.last_write_index = curr_wi
-        state.sample_carry += delta
-        
-        hop = int(state.hop_size or max(1, self._nperseg - self._noverlap))
-        new = int(state.sample_carry // hop)
-        state.sample_carry %= hop
-        
-        return new
+        if self.plot_mode == "Scroll":
+            # In Scroll mode, _write_idx doesn't advance, so use timestamp-based calculation
+            if buf._tvec.size == 0:
+                return 0
+            
+            curr_last_timestamp = float(buf._tvec[-1])
+            # last_write_index stores the last processed timestamp in Scroll mode
+            if state.last_write_index is None:
+                state.last_write_index = curr_last_timestamp
+                # #region agent log
+                _debug_log('debug-session', 'run1', 'A', f'{__file__}:{693}', 'calculate_new_columns Scroll early return 0', {
+                    'reason': 'prev_timestamp is None', 'curr_timestamp': curr_last_timestamp
+                })
+                # #endregion
+                return 0
+            
+            prev_timestamp = float(state.last_write_index)
+            # Calculate time delta and convert to samples
+            time_delta = curr_last_timestamp - prev_timestamp
+            if time_delta <= 0:
+                return 0
+            
+            # Get sampling rate to convert time delta to samples
+            srate = self._data_sources[src_ix].data_stats.get('srate', 0.0) or 0.0
+            if srate < MIN_SRATE:
+                return 0
+            
+            delta_samples = int(time_delta * srate)
+            state.last_write_index = curr_last_timestamp
+            state.sample_carry += delta_samples
+            
+            hop = int(state.hop_size or max(1, self._nperseg - self._noverlap))
+            new = int(state.sample_carry // hop)
+            state.sample_carry %= hop
+            
+            # #region agent log
+            _debug_log('debug-session', 'run1', 'A', f'{__file__}:{703}', 'calculate_new_columns Scroll exit', {
+                'new_cols': new, 'delta_samples': delta_samples, 'time_delta': time_delta,
+                'sample_carry_before': state.sample_carry + (new * hop),
+                'sample_carry_after': state.sample_carry, 'hop': hop, 'prev_timestamp': prev_timestamp, 'curr_timestamp': curr_last_timestamp
+            })
+            # #endregion
+            return new
+        else:
+            # Sweep mode: use write index comparison
+            if not hasattr(buf, "_write_idx"):
+                # #region agent log
+                _debug_log('debug-session', 'run1', 'A', f'{__file__}:{686}', 'calculate_new_columns early return 0', {
+                    'reason': 'no _write_idx in Sweep mode'
+                })
+                # #endregion
+                return 0
+            
+            curr_wi = int(buf._write_idx)
+            prev_wi = state.last_write_index
+            
+            if prev_wi is None:
+                state.last_write_index = curr_wi
+                # #region agent log
+                _debug_log('debug-session', 'run1', 'A', f'{__file__}:{693}', 'calculate_new_columns early return 0', {
+                    'reason': 'prev_wi is None', 'curr_wi': curr_wi
+                })
+                # #endregion
+                return 0
+            
+            delta = int((curr_wi - prev_wi) % buf_len)
+            state.last_write_index = float(curr_wi)  # Store as float for type consistency
+            state.sample_carry += delta
+            
+            hop = int(state.hop_size or max(1, self._nperseg - self._noverlap))
+            new = int(state.sample_carry // hop)
+            state.sample_carry %= hop
+            
+            # #region agent log
+            _debug_log('debug-session', 'run1', 'A', f'{__file__}:{703}', 'calculate_new_columns exit', {
+                'new_cols': new, 'delta': delta, 'sample_carry_before': state.sample_carry + (new * hop),
+                'sample_carry_after': state.sample_carry, 'hop': hop, 'prev_wi': prev_wi, 'curr_wi': curr_wi
+            })
+            # #endregion
+            return new
     
     def _update_heatmap_columns(self, src_ix: int, P_use: np.ndarray, new_cols: int) -> bool:
         """
@@ -714,19 +810,47 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         Returns:
             True if update was successful, False otherwise
         """
+        # #region agent log
+        _debug_log('debug-session', 'run1', 'B', f'{__file__}:{705}', 'update_heatmap_columns entry', {
+            'src_ix': src_ix, 'new_cols': new_cols, 'plot_mode': self.plot_mode,
+            'P_use_shape': list(P_use.shape) if P_use is not None else None
+        })
+        # #endregion
         if new_cols <= 0:
+            # #region agent log
+            _debug_log('debug-session', 'run1', 'B', f'{__file__}:{718}', 'update_heatmap_columns return False', {
+                'reason': 'new_cols <= 0'
+            })
+            # #endregion
             return False
         
         state = self._source_states[src_ix]
         if state.heatmap is None:
+            # #region agent log
+            _debug_log('debug-session', 'run1', 'B', f'{__file__}:{722}', 'update_heatmap_columns return False', {
+                'reason': 'heatmap is None'
+            })
+            # #endregion
             return False
         
         heat = state.heatmap
         n_cols = heat.shape[1]
         new_cols = min(new_cols, P_use.shape[1], n_cols)
         
+        # #region agent log
+        _debug_log('debug-session', 'run1', 'B', f'{__file__}:{726}', 'update_heatmap_columns before update', {
+            'heat_shape': list(heat.shape), 'n_cols': n_cols, 'new_cols_clamped': new_cols,
+            'P_use_cols': P_use.shape[1] if P_use is not None else None
+        })
+        # #endregion
+        
         if self.plot_mode != "Sweep":
             # Scroll: roll left and append new columns on the right
+            # #region agent log
+            _debug_log('debug-session', 'run1', 'B', f'{__file__}:{729}', 'update_heatmap_columns Scroll mode', {
+                'branch': 'Scroll', 'new_cols': new_cols, 'n_cols': n_cols
+            })
+            # #endregion
             if new_cols >= n_cols:
                 heat[:, :] = P_use[:, -n_cols:]
             else:
@@ -734,12 +858,22 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                 heat[:, -new_cols:] = P_use[:, -new_cols:]
         else:
             # Sweep: circular write into columns
+            # #region agent log
+            _debug_log('debug-session', 'run1', 'B', f'{__file__}:{736}', 'update_heatmap_columns Sweep mode', {
+                'branch': 'Sweep', 'write_index': state.write_index
+            })
+            # #endregion
             widx = state.write_index
             for k in range(new_cols):
                 col = (widx + k) % n_cols
                 heat[:, col] = P_use[:, -new_cols + k]
             state.write_index = (widx + new_cols) % n_cols
         
+        # #region agent log
+        _debug_log('debug-session', 'run1', 'B', f'{__file__}:{743}', 'update_heatmap_columns exit', {
+            'success': True, 'heatmap_updated': True
+        })
+        # #endregion
         return True
     
     def _prepare_display_heatmap(self, src_ix: int) -> Optional[np.ndarray]:
@@ -752,8 +886,18 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         Returns:
             Display array or None if not available
         """
+        # #region agent log
+        _debug_log('debug-session', 'run1', 'C', f'{__file__}:{745}', 'prepare_display_heatmap entry', {
+            'src_ix': src_ix, 'plot_mode': self.plot_mode
+        })
+        # #endregion
         state = self._source_states[src_ix]
         if state.heatmap is None:
+            # #region agent log
+            _debug_log('debug-session', 'run1', 'C', f'{__file__}:{757}', 'prepare_display_heatmap return None', {
+                'reason': 'heatmap is None'
+            })
+            # #endregion
             return None
         
         if self.plot_mode == "Sweep":
@@ -770,6 +914,12 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         if not np.isfinite(display).all():
             display = np.nan_to_num(display, nan=DEFAULT_DB_FLOOR)
         
+        # #region agent log
+        _debug_log('debug-session', 'run1', 'C', f'{__file__}:{773}', 'prepare_display_heatmap exit', {
+            'display_shape': list(display.shape) if display is not None else None,
+            'plot_mode': self.plot_mode, 'has_finite': np.isfinite(display).any() if display is not None else False
+        })
+        # #endregion
         return display
     
     def _update_color_levels(self, src_ix: int, display: Optional[np.ndarray] = None) -> Tuple[float, float]:
@@ -917,7 +1067,17 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             data: List of (data, markers) tuples per source
             timestamps: List of (timestamps, marker_timestamps) tuples per source
         """
+        # #region agent log
+        _debug_log('debug-session', 'run1', 'D', f'{__file__}:{912}', 'update_visualization entry', {
+            'plot_mode': self.plot_mode, 'n_sources': len(data), 'is_manually_scrolled': self._is_manually_scrolled
+        })
+        # #endregion
         if not any([np.any(_) for _ in timestamps[0]]):
+            # #region agent log
+            _debug_log('debug-session', 'run1', 'D', f'{__file__}:{921}', 'update_visualization early return', {
+                'reason': 'no timestamps'
+            })
+            # #endregion
             return
 
         # Get cached LUT
@@ -946,11 +1106,46 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                 state = self._source_states[src_ix]
                 
                 # Check if there's new data to process (avoid expensive spectrogram computation if no new data)
-                if hasattr(buf, "_write_idx"):
+                # In Scroll mode, _write_idx doesn't advance (buffer shifts data instead), so we use timestamp-based detection
+                # In Sweep mode, _write_idx advances, so we can use write index comparison
+                if self.plot_mode == "Scroll":
+                    # In Scroll mode, check if the last timestamp in buffer has changed
+                    if buf._tvec.size > 0:
+                        curr_last_timestamp = float(buf._tvec[-1])
+                        # Use a small threshold to handle floating point precision
+                        if state.last_processed_write_idx is None:
+                            has_new_data = True
+                        else:
+                            # last_processed_write_idx stores the last processed timestamp in Scroll mode
+                            last_processed_timestamp = float(state.last_processed_write_idx)
+                            has_new_data = abs(curr_last_timestamp - last_processed_timestamp) > 1e-6
+                    else:
+                        has_new_data = False
+                    # #region agent log
+                    _debug_log('debug-session', 'run1', 'A', f'{__file__}:{1059}', 'has_new_data check Scroll', {
+                        'src_ix': src_ix, 'plot_mode': self.plot_mode, 'has_new_data': has_new_data,
+                        'curr_last_timestamp': curr_last_timestamp if buf._tvec.size > 0 else None,
+                        'last_processed_timestamp': float(state.last_processed_write_idx) if state.last_processed_write_idx is not None else None
+                    })
+                    # #endregion
+                elif hasattr(buf, "_write_idx"):
+                    # Sweep mode: use write index comparison
                     curr_write_idx = int(buf._write_idx)  # type: ignore
                     # Only compute spectrogram if we have new data or haven't processed this source yet
                     has_new_data = (state.last_processed_write_idx is None or 
                                    curr_write_idx != state.last_processed_write_idx)
+                    # #region agent log
+                    _debug_log('debug-session', 'run1', 'A', f'{__file__}:{1059}', 'has_new_data check Sweep', {
+                        'src_ix': src_ix, 'plot_mode': self.plot_mode, 'has_new_data': has_new_data,
+                        'curr_write_idx': curr_write_idx, 'last_processed_write_idx': state.last_processed_write_idx
+                    })
+                    # #endregion
+                else:
+                    # #region agent log
+                    _debug_log('debug-session', 'run1', 'A', f'{__file__}:{1062}', 'no _write_idx attribute', {
+                        'src_ix': src_ix, 'plot_mode': self.plot_mode
+                    })
+                    # #endregion
                 
                 if has_new_data:
                     # Compute channel average with validation
@@ -976,9 +1171,20 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                                         # Update heatmap with new columns
                                         if new_cols > 0:
                                             self._update_heatmap_columns(src_ix, P_use, new_cols)
+                                        else:
+                                            # #region agent log
+                                            _debug_log('debug-session', 'run1', 'A', f'{__file__}:{978}', 'new_cols is 0, skipping update', {
+                                                'src_ix': src_ix, 'plot_mode': self.plot_mode
+                                            })
+                                            # #endregion
                                         
-                                        # Mark this write index as processed
-                                        if hasattr(buf, "_write_idx"):
+                                        # Mark this write index/timestamp as processed
+                                        if self.plot_mode == "Scroll":
+                                            # In Scroll mode, store the last processed timestamp
+                                            if buf._tvec.size > 0:
+                                                state.last_processed_write_idx = float(buf._tvec[-1])
+                                        elif hasattr(buf, "_write_idx"):
+                                            # In Sweep mode, store the write index
                                             state.last_processed_write_idx = int(buf._write_idx)  # type: ignore
 
                 # Prepare display heatmap (always update display, even if no new data)
@@ -991,6 +1197,11 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                     # Determine time range for x-axis
                     if self.plot_mode == "Scroll":
                         # In scroll mode, use actual time range from buffer
+                        # #region agent log
+                        _debug_log('debug-session', 'run1', 'E', f'{__file__}:{992}', 'Scroll mode time range calc', {
+                            'buf_tvec_size': buf._tvec.size if hasattr(buf, '_tvec') else 0
+                        })
+                        # #endregion
                         if buf._tvec.size > 0:
                             t_min = float(np.nanmin(buf._tvec))
                             t_max = float(np.nanmax(buf._tvec))
@@ -1010,6 +1221,12 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                         time_start = 0.0
                         time_width = float(self.duration)
                     
+                    # #region agent log
+                    _debug_log('debug-session', 'run1', 'E', f'{__file__}:{1012}', 'time range determined', {
+                        'plot_mode': self.plot_mode, 'time_start': time_start, 'time_width': time_width
+                    })
+                    # #endregion
+                    
                     # Update x-axis range only if not manually scrolled
                     # Find bottom plot item (the one all others are linked to)
                     bottom_plot_item = None
@@ -1019,13 +1236,25 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                             break
                     
                     # Only update x-axis range for bottom plot item (others are linked)
-                    if pw is bottom_plot_item and not self._is_manually_scrolled:
+                    is_bottom = pw is bottom_plot_item
+                    # #region agent log
+                    _debug_log('debug-session', 'run1', 'D', f'{__file__}:{1022}', 'x-axis range update check', {
+                        'is_bottom': is_bottom, 'is_manually_scrolled': self._is_manually_scrolled,
+                        'will_update_range': is_bottom and not self._is_manually_scrolled
+                    })
+                    # #endregion
+                    if is_bottom and not self._is_manually_scrolled:
                         # Suppress signal during programmatic update
                         self._suppress_range_signal = True
                         try:
                             pw.setXRange(time_start, time_start + time_width)
                             # Store the auto-update range for comparison
                             self._last_auto_xrange = (time_start, time_start + time_width)
+                            # #region agent log
+                            _debug_log('debug-session', 'run1', 'D', f'{__file__}:{1028}', 'x-axis range updated', {
+                                'time_start': time_start, 'time_end': time_start + time_width
+                            })
+                            # #endregion
                         finally:
                             self._suppress_range_signal = False
                     
@@ -1033,13 +1262,48 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                     if src_ix < len(self._image_items):
                         img = self._image_items[src_ix]
                         if img is not None:
+                            # #region agent log
+                            _debug_log('debug-session', 'run1', 'C', f'{__file__}:{1036}', 'before setImage', {
+                                'display_shape': list(display.shape), 'levels': levels, 'time_start': time_start,
+                                'time_width': time_width, 'plot_mode': self.plot_mode
+                            })
+                            # #endregion
                             img.setImage(display, levels=levels, autoLevels=False, _callSync='off')
                             img.setLookupTable(lut, _callSync='off')
-                            img.setRect(pg.QtCore.QRectF(
+                            rect = pg.QtCore.QRectF(
                                 time_start, float(self._fmin_hz),
                                 time_width,
                                 float(self._fmax_hz - self._fmin_hz)
-                            ), _callSync='off')
+                            )
+                            # #region agent log
+                            _debug_log('debug-session', 'run1', 'E', f'{__file__}:{1038}', 'before setRect', {
+                                'rect_x': rect.x(), 'rect_y': rect.y(), 'rect_width': rect.width(), 'rect_height': rect.height()
+                            })
+                            # #endregion
+                            img.setRect(rect, _callSync='off')
+                            # #region agent log
+                            _debug_log('debug-session', 'run1', 'C', f'{__file__}:{1042}', 'after setImage/setRect', {
+                                'completed': True
+                            })
+                            # #endregion
+                        else:
+                            # #region agent log
+                            _debug_log('debug-session', 'run1', 'C', f'{__file__}:{1044}', 'image item is None', {
+                                'src_ix': src_ix, 'len_image_items': len(self._image_items)
+                            })
+                            # #endregion
+                    else:
+                        # #region agent log
+                        _debug_log('debug-session', 'run1', 'C', f'{__file__}:{1046}', 'src_ix out of range', {
+                            'src_ix': src_ix, 'len_image_items': len(self._image_items)
+                        })
+                        # #endregion
+                else:
+                    # #region agent log
+                    _debug_log('debug-session', 'run1', 'C', f'{__file__}:{985}', 'display is None, skipping image update', {
+                        'src_ix': src_ix
+                    })
+                    # #endregion
 
             # Update markers
             self._update_markers(src_ix, pw, mrk, mrk_ts)

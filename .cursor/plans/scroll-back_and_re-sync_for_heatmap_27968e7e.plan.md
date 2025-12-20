@@ -154,5 +154,3 @@ Add scroll-back functionality to the `HeatmapPG` renderer that allows users to s
 - The re-sync button should be visually distinct (arrow icon) and clearly labeled
 - The disconnect button should be placed next to the re-sync button for easy access
 - Button states should be mutually exclusive: when synced, disconnect is enabled and re-sync is disabled; when disconnected, re-sync is enabled and disconnect is disabled
-
-## Files to Modify

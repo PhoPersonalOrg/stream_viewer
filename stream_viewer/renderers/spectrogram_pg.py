@@ -127,6 +127,7 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
         self._widget = pg.GraphicsLayoutWidget()
         self._plot_items: List[Optional[pg.PlotItem]] = []
         self._image_items: List[Optional[pg.ImageItem]] = []
+        self._debug_text_items: List[Optional[pg.TextItem]] = []
         
         # Per-source state
         self._source_states: List[SpectrogramState] = []
@@ -166,6 +167,7 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
         # Initialize/reset per-source storage
         self._plot_items = [None] * n_sources
         self._image_items = [None] * n_sources
+        self._debug_text_items = [None] * n_sources
         
         # Initialize source states
         while len(self._source_states) < n_sources:
@@ -242,6 +244,14 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
             img.setLookupTable(lut)
             pw.addItem(img)
             self._image_items[src_ix] = img
+            
+            # Create debug text item below the plot
+            debug_font = QtGui.QFont()
+            debug_font.setPointSize(8)
+            debug_text = pg.TextItem('', color='#FFF', anchor=(0, 1))
+            debug_text.setFont(debug_font)
+            pw.addItem(debug_text)
+            self._debug_text_items[src_ix] = debug_text
         
         # Configure bottom axis label
         if last_row >= 0 and self._plot_items[last_row] is not None:
@@ -411,10 +421,16 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
         
         # Convert to dB
         with np.errstate(invalid='ignore', divide='ignore'):
-            Pxx = 10.0 * np.log10(Sxx + EPSILON)
+            Pxx = 10.0 * np.log10(Sxx + EPSILON) ## I guess this converts to dB, which I don't understand
+        
+        # Debug: Check what values we're actually getting
+        logger.debug(f"Sxx stats: min={np.min(Sxx):.2e}, max={np.max(Sxx):.2e}, mean={np.mean(Sxx):.2e}")
+        logger.debug(f"Pxx stats: min={np.min(Pxx):.2f}, max={np.max(Pxx):.2f}, mean={np.mean(Pxx):.2f}")
+        logger.debug(f"Input x stats: min={np.min(x):.2f}, max={np.max(x):.2f}, non-zero={np.count_nonzero(x)}/{x.size}")
         
         return (f, t, Pxx)
     
+
     def _ensure_state_initialized(self, src_ix: int, srate: float, f: np.ndarray, Pxx: np.ndarray) -> bool:
         """
         Initialize source state if needed.
@@ -503,6 +519,7 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
             heat[:, :-n_new_cols] = heat[:, n_new_cols:]
             heat[:, -n_new_cols:] = P_new[:, -n_new_cols:]
     
+
     def _get_colormap_lut(self) -> np.ndarray:
         """Get cached colormap lookup table."""
         if self._cached_lut is None or self._cached_color_set != self.color_set:
@@ -549,7 +566,9 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
                 continue
             
             # Compute spectrogram
-            spec_result = self._compute_spectrogram(x, srate)
+            
+
+            spec_result = self._compute_spectrogram(x, srate) # x is reasonable, it has a lot of zeros, but also large values like 4479.6797. Actually only 2 values greater than 0
             if spec_result is None:
                 continue
             
@@ -630,6 +649,28 @@ class SpectrogramPG(RendererDataTimeSeries, PGRenderer):
                 time_start, float(self._fmin_hz),
                 time_width, float(self._fmax_hz - self._fmin_hz)
             ))
+            
+            # Update debug labels
+            debug_text = self._debug_text_items[src_ix] if src_ix < len(self._debug_text_items) else None
+            if debug_text is not None:
+                # Compute statistics
+                data_min = float(np.nanmin(display))
+                data_max = float(np.nanmax(display))
+                n_non_nan = int(np.sum(np.isfinite(display)))
+                total_elements = display.size
+                
+                # Get buffer info
+                buf_size = buf._data.shape[1] if buf._data.ndim == 2 else 0
+                buf_idx = int(buf._write_idx) if hasattr(buf, '_write_idx') else 0
+                
+                # Format debug string
+                debug_str = (f"min={data_min:.2f} max={data_max:.2f} | "
+                            f"non-NaN={n_non_nan}/{total_elements} | "
+                            f"levels=[{levels[0]:.2f}, {levels[1]:.2f}] | "
+                            f"buf: size={buf_size} idx={buf_idx}")
+                debug_text.setText(debug_str)
+                # Position at bottom-left of plot area
+                debug_text.setPos(time_start, self._fmin_hz)
 
     # ========================================
     # Properties
