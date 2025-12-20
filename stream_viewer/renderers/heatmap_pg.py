@@ -41,6 +41,8 @@ class SourceState:
     last_write_index: Optional[float] = None  # Write index (int in Sweep mode) or timestamp (float in Scroll mode)
     sample_carry: int = 0
     last_processed_write_idx: Optional[float] = None  # Track last processed write index (int in Sweep mode) or timestamp (float in Scroll mode)
+    session_start_time: Optional[float] = None  # Track when session began for this source
+    session_time_range: Optional[Tuple[float, float]] = None  # Track full time span [start, end]
     
     def reset(self):
         """Reset all state to initial values."""
@@ -53,6 +55,8 @@ class SourceState:
         self.last_write_index = None
         self.sample_carry = 0
         self.last_processed_write_idx = None
+        self.session_start_time = None
+        self.session_time_range = None
 
 
 class HeatmapPG(RendererDataTimeSeries, PGRenderer):
@@ -397,26 +401,31 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                 f_mask = np.ones_like(f, dtype=bool)
             state.freq_mask = f_mask
 
-        # Initialize hop and column count
+        # Initialize hop size (used for column calculation)
         if state.hop_size is None and srate >= MIN_SRATE:
             hop = max(1, int(self._nperseg - self._noverlap))
-            N = max(0, int(srate * self.duration))
-            n_cols = 1 + max(0, (N - int(self._nperseg)) // hop) if N >= int(self._nperseg) else 1
             state.hop_size = hop
-            state.n_time_cols = n_cols
 
-        # Initialize heatmap with NaNs sized to freq mask and columns
+        # Initialize heatmap with initial size based on duration (will grow dynamically)
         if (state.heatmap is None and state.freq_mask is not None and 
-            state.n_time_cols is not None):
+            state.hop_size is not None):
             n_freq = int(np.sum(state.freq_mask))
-            n_cols = int(state.n_time_cols)
-            if n_freq > 0 and n_cols > 0:
-                state.heatmap = np.full((n_freq, n_cols), np.nan, dtype=float)
+            # Start with initial size based on duration for initial display window
+            # This will grow as new columns are added
+            if srate >= MIN_SRATE:
+                N = max(0, int(srate * self.duration))
+                initial_n_cols = 1 + max(0, (N - int(self._nperseg)) // state.hop_size) if N >= int(self._nperseg) else 1
+            else:
+                initial_n_cols = 1
+            state.n_time_cols = initial_n_cols  # Track current number of columns
+            
+            if n_freq > 0 and initial_n_cols > 0:
+                state.heatmap = np.full((n_freq, initial_n_cols), np.nan, dtype=float)
                 state.write_index = 0
                 state.locked_levels = None
                 return True
             else:
-                logger.warning(f"Source {src_ix}: Invalid heatmap dimensions ({n_freq}, {n_cols})")
+                logger.warning(f"Source {src_ix}: Invalid heatmap dimensions ({n_freq}, {initial_n_cols})")
                 return False
         
         return state.heatmap is not None
@@ -571,16 +580,27 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                     except Exception:
                         pass
             
-            # Update x-axis range to current time window
-            # Get time range from first available buffer
-            if len(self._buffers) > 0:
-                buf = self._buffers[0]
-                if buf._tvec.size > 0:
-                    t_min = float(np.nanmin(buf._tvec))
-                    t_max = float(np.nanmax(buf._tvec))
-                    if np.isfinite(t_min) and np.isfinite(t_max) and t_max > t_min:
-                        time_start = t_min
-                        time_width = t_max - t_min
+            # Update x-axis range to current time window (most recent duration seconds)
+            # Check if we have session tracking for full history
+            if len(self._source_states) > 0:
+                state = self._source_states[0]
+                if state.session_time_range is not None and state.session_start_time is not None:
+                    # Use session range: show most recent duration window
+                    session_start, session_end = state.session_time_range
+                    current_time = session_end
+                    time_start = max(session_start, current_time - self.duration)
+                    time_width = min(self.duration, current_time - time_start)
+                elif len(self._buffers) > 0:
+                    # Fallback to buffer range
+                    buf = self._buffers[0]
+                    if buf._tvec.size > 0:
+                        t_max = float(np.nanmax(buf._tvec))
+                        if np.isfinite(t_max):
+                            time_start = max(0.0, t_max - self.duration)
+                            time_width = self.duration
+                        else:
+                            time_start = 0.0
+                            time_width = float(self.duration)
                     else:
                         time_start = 0.0
                         time_width = float(self.duration)
@@ -781,17 +801,20 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         
         heat = state.heatmap
         n_cols = heat.shape[1]
-        new_cols = min(new_cols, P_use.shape[1], n_cols)
+        # Limit new_cols to available columns in P_use
+        new_cols = min(new_cols, P_use.shape[1])
         
         if self.plot_mode != "Sweep":
-            # Scroll: roll left and append new columns on the right
-            if new_cols >= n_cols:
-                heat[:, :] = P_use[:, -n_cols:]
-            else:
-                heat[:, :-new_cols] = heat[:, new_cols:]
-                heat[:, -new_cols:] = P_use[:, -new_cols:]
+            # Scroll: append new columns (grow heatmap dynamically)
+            # Extract the columns to add from P_use (take the last new_cols columns)
+            cols_to_add = P_use[:, -new_cols:]
+            
+            # Append new columns to heatmap
+            state.heatmap = np.concatenate([heat, cols_to_add], axis=1)
+            state.n_time_cols = state.heatmap.shape[1]  # Update column count
         else:
-            # Sweep: circular write into columns
+            # Sweep: circular write into columns (unchanged behavior)
+            new_cols = min(new_cols, n_cols)  # Limit to current size in Sweep mode
             widx = state.write_index
             for k in range(new_cols):
                 col = (widx + k) % n_cols
@@ -800,19 +823,20 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         
         return True
     
-    def _prepare_display_heatmap(self, src_ix: int) -> Optional[np.ndarray]:
+    def _prepare_display_heatmap(self, src_ix: int, pw=None) -> Tuple[Optional[np.ndarray], Optional[Tuple[float, float]]]:
         """
-        Prepare display heatmap, handling Sweep mode wrap-around.
+        Prepare display heatmap, handling Sweep mode wrap-around or extracting visible time window in Scroll mode.
         
         Args:
             src_ix: Source index
+            pw: Plot widget (optional, used to get x-axis range in Scroll mode)
             
         Returns:
-            Display array or None if not available
+            Tuple of (display array, time range tuple (start, end)) or (None, None) if not available
         """
         state = self._source_states[src_ix]
         if state.heatmap is None:
-            return None
+            return None, None
         
         if self.plot_mode == "Sweep":
             widx = int(state.write_index)
@@ -821,14 +845,67 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                 display = np.hstack([heat[:, (widx+1):], heat[:, :(widx+1)]])
             else:
                 display = heat
+            # Sweep mode: time range is fixed 0 to duration
+            time_range = (0.0, float(self.duration))
         else:
-            display = state.heatmap.copy()
+            # Scroll mode: extract columns corresponding to visible time window
+            heat = state.heatmap
+            n_cols = heat.shape[1]
+            
+            # Get visible time range from plot if available
+            if pw is not None and state.session_start_time is not None and state.hop_size is not None:
+                try:
+                    # Get current x-axis range from plot
+                    view_range = pw.viewRange()[0]  # [x_min, x_max]
+                    visible_t_min = float(view_range[0])
+                    visible_t_max = float(view_range[1])
+                    
+                    # Get sampling rate to calculate time per column
+                    srate = self._data_sources[src_ix].data_stats.get('srate', 0.0) or 0.0
+                    if srate >= MIN_SRATE:
+                        time_per_column = state.hop_size / srate
+                        session_start = state.session_start_time
+                        
+                        # Calculate column indices for visible time range
+                        # Column i corresponds to time: session_start + i * time_per_column
+                        col_start = max(0, int((visible_t_min - session_start) / time_per_column))
+                        col_end = min(n_cols, int(np.ceil((visible_t_max - session_start) / time_per_column)))
+                        
+                        # Ensure valid range
+                        if col_start < col_end and col_start < n_cols:
+                            display = heat[:, col_start:col_end].copy()
+                            # Calculate actual time range of extracted columns
+                            img_time_start = session_start + col_start * time_per_column
+                            img_time_end = session_start + col_end * time_per_column
+                            time_range = (img_time_start, img_time_end)
+                        else:
+                            # Fallback: show all columns
+                            display = heat.copy()
+                            if state.session_time_range is not None:
+                                time_range = state.session_time_range
+                            else:
+                                time_range = (visible_t_min, visible_t_max)
+                    else:
+                        # Invalid srate: show all columns
+                        display = heat.copy()
+                        time_range = (visible_t_min, visible_t_max) if pw is not None else None
+                except Exception:
+                    # Fallback: show all columns if range extraction fails
+                    display = heat.copy()
+                    time_range = None
+            else:
+                # No plot or session info: show all columns
+                display = heat.copy()
+                if state.session_time_range is not None:
+                    time_range = state.session_time_range
+                else:
+                    time_range = None
         
         # Replace NaN values with default for rendering
-        if not np.isfinite(display).all():
+        if display is not None and not np.isfinite(display).all():
             display = np.nan_to_num(display, nan=DEFAULT_DB_FLOOR)
         
-        return display
+        return display, time_range
     
     def _update_color_levels(self, src_ix: int, display: Optional[np.ndarray] = None) -> Tuple[float, float]:
         """
@@ -848,7 +925,7 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         """
         # Prepare display array if not provided
         if display is None:
-            display = self._prepare_display_heatmap(src_ix)
+            display, _ = self._prepare_display_heatmap(src_ix)
         
         # Always calculate/update global min/max from display data (in dB units)
         # This ensures we have valid dB-range values regardless of auto_scale setting
@@ -1033,6 +1110,17 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                         # Get sampling rate
                         srate = self._data_sources[src_ix].data_stats.get('srate', 0.0) or 0.0
                         if srate >= MIN_SRATE:
+                            # Track session start time on first data update
+                            if self.plot_mode == "Scroll" and buf._tvec.size > 0:
+                                if state.session_start_time is None:
+                                    # First data: record session start time
+                                    state.session_start_time = float(np.nanmin(buf._tvec))
+                                    state.session_time_range = (state.session_start_time, state.session_start_time)
+                                # Update session time range (end time)
+                                current_time = float(np.nanmax(buf._tvec))
+                                if state.session_time_range is not None:
+                                    state.session_time_range = (state.session_start_time, current_time)
+                            
                             # Compute spectrogram (only when we have new data)
                             spec_result = self._compute_spectrogram(x, srate)
                             if spec_result is not None:
@@ -1061,7 +1149,7 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                                             state.last_processed_write_idx = int(buf._write_idx)  # type: ignore
 
                 # Prepare display heatmap (always update display, even if no new data)
-                display = self._prepare_display_heatmap(src_ix)
+                display, display_time_range = self._prepare_display_heatmap(src_ix, pw=pw)
                 if display is not None:
                     # Update color levels using display array (after NaN replacement)
                     # This ensures global min/max are calculated from the same data that will be displayed
@@ -1069,21 +1157,33 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                     
                     # Determine time range for x-axis
                     if self.plot_mode == "Scroll":
-                        # In scroll mode, use actual time range from buffer
-                        if buf._tvec.size > 0:
-                            t_min = float(np.nanmin(buf._tvec))
-                            t_max = float(np.nanmax(buf._tvec))
-                            # Ensure valid range
-                            if np.isfinite(t_min) and np.isfinite(t_max) and t_max > t_min:
-                                time_start = t_min
-                                time_width = t_max - t_min
+                        # In scroll mode, use full session range if available, otherwise buffer range
+                        state = self._source_states[src_ix]
+                        if state.session_time_range is not None and state.session_start_time is not None:
+                            # Full session available: use session range for x-axis limits
+                            session_start, session_end = state.session_time_range
+                            # Default to showing most recent duration window
+                            if buf._tvec.size > 0:
+                                current_time = float(np.nanmax(buf._tvec))
+                                time_start = max(session_start, current_time - self.duration)
+                                time_width = min(self.duration, current_time - time_start)
                             else:
-                                # Fallback to duration-based range
+                                time_start = session_start
+                                time_width = min(self.duration, session_end - session_start)
+                        else:
+                            # No session range yet: use buffer range
+                            if buf._tvec.size > 0:
+                                t_min = float(np.nanmin(buf._tvec))
+                                t_max = float(np.nanmax(buf._tvec))
+                                if np.isfinite(t_min) and np.isfinite(t_max) and t_max > t_min:
+                                    time_start = t_min
+                                    time_width = t_max - t_min
+                                else:
+                                    time_start = 0.0
+                                    time_width = float(self.duration)
+                            else:
                                 time_start = 0.0
                                 time_width = float(self.duration)
-                        else:
-                            time_start = 0.0
-                            time_width = float(self.duration)
                     else:
                         # In sweep mode, use fixed 0 to duration
                         time_start = 0.0
@@ -1115,9 +1215,16 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                         if img is not None:
                             img.setImage(display, levels=levels, autoLevels=False, _callSync='off')
                             img.setLookupTable(lut, _callSync='off')
+                            # Use display_time_range if available, otherwise fallback to x-axis range
+                            if display_time_range is not None:
+                                img_time_start, img_time_end = display_time_range
+                                img_time_width = img_time_end - img_time_start
+                            else:
+                                img_time_start = time_start
+                                img_time_width = time_width
                             rect = pg.QtCore.QRectF(
-                                time_start, float(self._fmin_hz),
-                                time_width,
+                                img_time_start, float(self._fmin_hz),
+                                img_time_width,
                                 float(self._fmax_hz - self._fmin_hz)
                             )
                             img.setRect(rect, _callSync='off')
