@@ -823,13 +823,14 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         
         return True
     
-    def _prepare_display_heatmap(self, src_ix: int, pw=None) -> Tuple[Optional[np.ndarray], Optional[Tuple[float, float]]]:
+    def _prepare_display_heatmap(self, src_ix: int, pw=None, target_xrange: Optional[Tuple[float, float]] = None) -> Tuple[Optional[np.ndarray], Optional[Tuple[float, float]]]:
         """
         Prepare display heatmap, handling Sweep mode wrap-around or extracting visible time window in Scroll mode.
         
         Args:
             src_ix: Source index
             pw: Plot widget (optional, used to get x-axis range in Scroll mode)
+            target_xrange: Optional target x-axis range (start, end). If provided, use this instead of reading current range.
             
         Returns:
             Tuple of (display array, time range tuple (start, end)) or (None, None) if not available
@@ -855,10 +856,14 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             # Get visible time range from plot if available
             if pw is not None and state.session_start_time is not None and state.hop_size is not None:
                 try:
-                    # Get current x-axis range from plot
-                    view_range = pw.viewRange()[0]  # [x_min, x_max]
-                    visible_t_min = float(view_range[0])
-                    visible_t_max = float(view_range[1])
+                    # Use target_xrange if provided, otherwise read current x-axis range from plot
+                    if target_xrange is not None:
+                        visible_t_min, visible_t_max = target_xrange
+                    else:
+                        # Get current x-axis range from plot
+                        view_range = pw.viewRange()[0]  # [x_min, x_max]
+                        visible_t_min = float(view_range[0])
+                        visible_t_max = float(view_range[1])
                     
                     # Get sampling rate to calculate time per column
                     srate = self._data_sources[src_ix].data_stats.get('srate', 0.0) or 0.0
@@ -1058,6 +1063,68 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         # Get cached LUT
         lut = self._get_colormap_lut()
 
+        # Pre-calculate x-axis range once before processing sources (for Scroll mode)
+        # This ensures consistent range calculation and prevents jerky updates
+        target_xrange: Optional[Tuple[float, float]] = None
+        if self.plot_mode == "Scroll" and not self._is_manually_scrolled:
+            # Find first available source to calculate range
+            for src_ix in range(len(data)):
+                if src_ix >= len(self._plot_items) or src_ix >= len(self._buffers):
+                    continue
+                buf = self._buffers[src_ix]
+                state = self._source_states[src_ix]
+                
+                if buf._data.size > 0:
+                    # Calculate time range for x-axis using this source's state
+                    if state.session_time_range is not None and state.session_start_time is not None:
+                        # Full session available: use session range for x-axis limits
+                        session_start, session_end = state.session_time_range
+                        # Default to showing most recent duration window
+                        if buf._tvec.size > 0:
+                            current_time = float(np.nanmax(buf._tvec))
+                            time_start = max(session_start, current_time - self.duration)
+                            time_width = min(self.duration, current_time - time_start)
+                        else:
+                            time_start = session_start
+                            time_width = min(self.duration, session_end - session_start)
+                    else:
+                        # No session range yet: use buffer range
+                        if buf._tvec.size > 0:
+                            t_min = float(np.nanmin(buf._tvec))
+                            t_max = float(np.nanmax(buf._tvec))
+                            if np.isfinite(t_min) and np.isfinite(t_max) and t_max > t_min:
+                                time_start = t_min
+                                time_width = t_max - t_min
+                            else:
+                                time_start = 0.0
+                                time_width = float(self.duration)
+                        else:
+                            time_start = 0.0
+                            time_width = float(self.duration)
+                    
+                    target_xrange = (time_start, time_start + time_width)
+                    break
+        
+        # Update x-axis range early (before preparing displays) to ensure consistency
+        if target_xrange is not None:
+            # Find bottom plot item (the one all others are linked to)
+            bottom_plot_item = None
+            for plot_item in reversed(self._plot_items):
+                if plot_item is not None:
+                    bottom_plot_item = plot_item
+                    break
+            
+            if bottom_plot_item is not None:
+                time_start, time_end = target_xrange
+                # Suppress signal during programmatic update
+                self._suppress_range_signal = True
+                try:
+                    bottom_plot_item.setXRange(time_start, time_end)
+                    # Store the auto-update range for comparison
+                    self._last_auto_xrange = (time_start, time_end)
+                finally:
+                    self._suppress_range_signal = False
+
         for src_ix in range(len(data)):
             # Get plot item from remote plot items list
             if src_ix >= len(self._plot_items):
@@ -1149,20 +1216,22 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                                             state.last_processed_write_idx = int(buf._write_idx)  # type: ignore
 
                 # Prepare display heatmap (always update display, even if no new data)
-                display, display_time_range = self._prepare_display_heatmap(src_ix, pw=pw)
+                # Pass target_xrange to ensure consistent column extraction
+                display, display_time_range = self._prepare_display_heatmap(src_ix, pw=pw, target_xrange=target_xrange)
                 if display is not None:
                     # Update color levels using display array (after NaN replacement)
                     # This ensures global min/max are calculated from the same data that will be displayed
                     levels = self._update_color_levels(src_ix, display=display)
                     
-                    # Determine time range for x-axis
-                    if self.plot_mode == "Scroll":
-                        # In scroll mode, use full session range if available, otherwise buffer range
+                    # Determine time range for image rect (use target_xrange if available, otherwise calculate)
+                    if target_xrange is not None:
+                        time_start, time_end = target_xrange
+                        time_width = time_end - time_start
+                    elif self.plot_mode == "Scroll":
+                        # Fallback: calculate time range (shouldn't happen if target_xrange was calculated)
                         state = self._source_states[src_ix]
                         if state.session_time_range is not None and state.session_start_time is not None:
-                            # Full session available: use session range for x-axis limits
                             session_start, session_end = state.session_time_range
-                            # Default to showing most recent duration window
                             if buf._tvec.size > 0:
                                 current_time = float(np.nanmax(buf._tvec))
                                 time_start = max(session_start, current_time - self.duration)
@@ -1171,7 +1240,6 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                                 time_start = session_start
                                 time_width = min(self.duration, session_end - session_start)
                         else:
-                            # No session range yet: use buffer range
                             if buf._tvec.size > 0:
                                 t_min = float(np.nanmin(buf._tvec))
                                 t_max = float(np.nanmax(buf._tvec))
@@ -1189,33 +1257,13 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                         time_start = 0.0
                         time_width = float(self.duration)
                     
-                    # Update x-axis range only if not manually scrolled
-                    # Find bottom plot item (the one all others are linked to)
-                    bottom_plot_item = None
-                    for plot_item in reversed(self._plot_items):
-                        if plot_item is not None:
-                            bottom_plot_item = plot_item
-                            break
-                    
-                    # Only update x-axis range for bottom plot item (others are linked)
-                    is_bottom = pw is bottom_plot_item
-                    if is_bottom and not self._is_manually_scrolled:
-                        # Suppress signal during programmatic update
-                        self._suppress_range_signal = True
-                        try:
-                            pw.setXRange(time_start, time_start + time_width)
-                            # Store the auto-update range for comparison
-                            self._last_auto_xrange = (time_start, time_start + time_width)
-                        finally:
-                            self._suppress_range_signal = False
-                    
                     # Update image with performance optimization: use _callSync='off' for operations that don't need return values
                     if src_ix < len(self._image_items):
                         img = self._image_items[src_ix]
                         if img is not None:
                             img.setImage(display, levels=levels, autoLevels=False, _callSync='off')
                             img.setLookupTable(lut, _callSync='off')
-                            # Use display_time_range if available, otherwise fallback to x-axis range
+                            # Use display_time_range if available, otherwise fallback to calculated time range
                             if display_time_range is not None:
                                 img_time_start, img_time_end = display_time_range
                                 img_time_width = img_time_end - img_time_start
