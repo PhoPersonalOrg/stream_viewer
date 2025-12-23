@@ -1,63 +1,104 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Sequence, Dict
+from typing import Optional, Sequence, Dict, Tuple
 
 import numpy as np
 import mne
 from mne.channels.montage import DigMontage
+import logging
 
-
-# Matplotlib embedding
-import matplotlib
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from stream_viewer.renderers.data.base import RendererMergeDataSources
-from stream_viewer.renderers.display.matplotlib import MPLRenderer
+from stream_viewer.renderers.display.pyvista import PyVistaRenderer
 
+logger = logging.getLogger(__name__)
 
 # Reuse Pho's montage helpers
 try:
     # Requires the sibling repo to be available on PYTHONPATH (already a workspace path)
-    from phoofflineeeganalysis.analysis.anatomy_and_electrodes import ElectrodeHelper
-        
+    from phopymnehelper.anatomy_and_electrodes import ElectrodeHelper
     active_electrode_man: ElectrodeHelper = ElectrodeHelper.init_EpocX_montage()
     emotiv_epocX_montage: DigMontage = active_electrode_man.active_montage
 
 except Exception:  # pragma: no cover
     ElectrodeHelper = None  # type: ignore[assignment]
 
+try:
+    import pyvista as pv
+    import pyvistaqt as pvqt
+    PYVISTA_AVAILABLE = True
+except ImportError:
+    PYVISTA_AVAILABLE = False
+    pv = None
+    pvqt = None
 
 
-class TopoMNE(RendererMergeDataSources, MPLRenderer):
+# Default head mesh path from notebook
+# DEFAULT_HEAD_MESH_PATH = Path(r"C:/Users/pho/repos/EmotivEpoc/PhoOfflineEEGAnalysis/src/phoofflineeeganalysis/resources/ElectrodeLayouts/head_bem_1922V_fill.stl")
+DEFAULT_HEAD_MESH_PATH = Path(r"C:/Users/pho/repos/EmotivEpoc/ACTIVE_DEV/PhoPyMNEHelper/src/phopymnehelper/resources/ElectrodeLayouts/simplified/head_bem_1922V_fill_fixed.stl")
+DEFAULT_ELECTRODE_LAYOUT = Path(r"C:/Users/pho/repos/EmotivEpoc/ACTIVE_DEV/PhoPyMNEHelper/src/phopymnehelper/resources/ElectrodeLayouts/brainstorm_electrode_positions_PhoHAle_eeg_subjectspacemm.tsv")
+
+class TopoMNE(RendererMergeDataSources, PyVistaRenderer):
     """
-    MNE-based head/sensor view, structured consistently with other visualizers.
+    MNE-based 3D head mesh visualization with PyVista, structured consistently with other visualizers.
+    Displays a 3D head mesh with electrode positions and supports real-time data updates.
     """
 
-    # Keep GUI consistency with other renderers
-    gui_kwargs = dict(MPLRenderer.gui_kwargs, **RendererMergeDataSources.gui_kwargs,
-                      montage_path=str, view_kind=str, show_axes=bool)
+    COMPAT_ICONTROL = ['TopoMNEControlPanel']
+    gui_kwargs = dict(PyVistaRenderer.gui_kwargs, **RendererMergeDataSources.gui_kwargs,
+                      montage_path=str, head_mesh_path=str, mesh_opacity=float,
+                      cone_radius=float, cone_height=float, show_labels=bool,
+                      electrode_offset_y=float, electrode_offset_z=float)
 
     def __init__(self,
                  show_chan_labels: bool = True,
                  montage_path: Optional[str] = None,
-                 view_kind: str = "3d",
-                 show_axes: bool = True,
+                 head_mesh_path: Optional[str] = None,
+                 mesh_opacity: float = 0.9,
+                 cone_radius: float = 0.005,
+                 cone_height: float = 0.01,
+                 show_labels: bool = True,
+                 electrode_offset_y: float = -0.04,
+                 electrode_offset_z: float = 0.052,
                  **kwargs):
         """
         Args:
-            show_chan_labels: Show channel labels on the plot (where supported).
+            show_chan_labels: Show channel labels on the plot.
             montage_path: Optional path to electrode positions file (.tsv recommended).
-            view_kind: '3d' (default) or 'top' for 2D sensor view.
-            show_axes: Show axes in the Matplotlib figure.
+            head_mesh_path: Path to STL head mesh file. Defaults to built-in path if None.
+            mesh_opacity: Opacity of the head mesh (0.0 to 1.0).
+            cone_radius: Radius of electrode cone glyphs in meters.
+            cone_height: Height of electrode cone glyphs in meters.
+            show_labels: Show text labels for electrode names.
+            electrode_offset_y: Y-axis offset for electrode positions (meters).
+            electrode_offset_z: Z-axis offset for electrode positions (meters).
             **kwargs: Standard renderer kwargs.
         """
+        if not PYVISTA_AVAILABLE:
+            raise RuntimeError("pyvista and pyvistaqt are required for TopoMNE")
+        
         self._destroy_obj = True
-        self._montage_path = Path(montage_path).expanduser().resolve() if montage_path else None
-        self._view_kind = view_kind
-        self._show_axes = show_axes
+        self._montage_path = Path(montage_path).expanduser().resolve() if montage_path else DEFAULT_ELECTRODE_LAYOUT
+        self._head_mesh_path = Path(head_mesh_path).expanduser().resolve() if head_mesh_path else DEFAULT_HEAD_MESH_PATH
+        self._mesh_opacity = mesh_opacity
+        self._cone_radius = cone_radius
+        self._cone_height = cone_height
+        self._show_labels = show_labels
+        self._electrode_offset_y = electrode_offset_y
+        self._electrode_offset_z = electrode_offset_z
+        
         self._visible_labels: Optional[np.ndarray] = None
         self._montage: Optional[mne.channels.DigMontage] = None
+        self._head_mesh: Optional[pv.PolyData] = None
+        self._electrode_points: Optional[np.ndarray] = None
+        self._electrode_names: Optional[list] = None
+        self._nearest_points: Optional[np.ndarray] = None
+        self._normals: Optional[np.ndarray] = None
+        self._mesh_actor = None
+        self._electrode_actor = None
+        self._label_actors = []
+        self._b_keep: Optional[np.ndarray] = None
+        
         super().__init__(show_chan_labels=show_chan_labels, **kwargs)
         self.reset_renderer()
 
@@ -65,7 +106,7 @@ class TopoMNE(RendererMergeDataSources, MPLRenderer):
     @staticmethod
     def _build_montage_from_path(electrode_positions_path: Path) -> mne.channels.DigMontage:
         if ElectrodeHelper is None:
-            raise RuntimeError("phoofflineeeganalysis not available; required for montage building.")
+            raise RuntimeError("phopymnehelper not available; required for montage building.")
 
         if electrode_positions_path.suffix.lower() == ".tsv":
             return ElectrodeHelper.montage_from_subjece_space_mm_tsv(electrode_positions_path)
@@ -79,7 +120,7 @@ class TopoMNE(RendererMergeDataSources, MPLRenderer):
     @staticmethod
     def _default_montage() -> mne.channels.DigMontage:
         if ElectrodeHelper is None:
-            raise RuntimeError("phoofflineeeganalysis not available; required for default montage.")
+            raise RuntimeError("phopymnehelper not available; required for default montage.")
         helper = ElectrodeHelper.init_EpocX_montage()
         return helper.active_montage
 
@@ -91,6 +132,52 @@ class TopoMNE(RendererMergeDataSources, MPLRenderer):
         if 'vis' in self.chan_states:
             labels = labels[self.chan_states['vis'].values]
         return labels
+
+    def _load_and_prepare_head_mesh(self) -> Optional[pv.PolyData]:
+        """Load STL mesh, scale from mm to m if needed, and center at origin."""
+        try:
+            if not self._head_mesh_path.exists():
+                logger.warning(f"Head mesh path does not exist: {self._head_mesh_path}")
+                return None
+            
+            mesh = pv.read(str(self._head_mesh_path))
+            logger.info(f"Loaded STL mesh with {mesh.n_points} vertices and {mesh.n_cells} faces.")
+            
+            # Convert from mm → m if needed
+            if np.max(np.abs(mesh.points)) > 0.1:  # heuristic threshold
+                mesh.points *= 1e-3
+                logger.info("Scaled mesh from mm to meters")
+            
+            # Center mesh at origin
+            mesh_center = mesh.center
+            mesh.translate(-np.array(mesh_center), inplace=True)
+            logger.info(f"Mesh centered at origin (shifted by {-np.array(mesh_center)})")
+            
+            # Compute normals for finding electrode surface points
+            mesh = mesh.compute_normals(point_normals=True, cell_normals=False, consistent_normals=True)
+            
+            return mesh
+        except Exception as e:
+            logger.error(f"Failed to load head mesh: {e}")
+            return None
+
+    def _compute_electrode_surface_points(self, electrode_points: np.ndarray, mesh: pv.PolyData) -> Tuple[np.ndarray, np.ndarray]:
+        """Find nearest surface points and normals for each electrode."""
+        nearest_points = np.zeros_like(electrode_points)
+        normals = np.zeros_like(electrode_points)
+        
+        for i, electrode_point in enumerate(electrode_points):
+            # Find closest vertex on mesh
+            closest_vertex_idx = mesh.find_closest_point(electrode_point)
+            closest_point = mesh.points[closest_vertex_idx]
+            
+            # Get normal at the closest vertex
+            normal = mesh.point_normals[closest_vertex_idx]
+            
+            nearest_points[i] = closest_point
+            normals[i] = normal
+        
+        return nearest_points, normals
 
     # -------------------- Rendering lifecycle -------------------- #
     def reset_renderer(self, reset_channel_labels=True):
@@ -104,95 +191,191 @@ class TopoMNE(RendererMergeDataSources, MPLRenderer):
                 montage = self._build_montage_from_path(self._montage_path)
             else:
                 montage = self._default_montage()
-        except Exception:
-            # If montage build fails, create an empty figure to avoid crashing UI
+        except Exception as e:
+            logger.warning(f"Failed to build montage: {e}")
             montage = None
 
         self._montage = montage
         self._visible_labels = self._compute_visible_labels()
 
-        # Build a figure
-        fig = Figure(figsize=(6, 6), facecolor=self._mpl_facecolor_from_str(self.bg_color))
-        ax = fig.add_subplot(111, projection=None)
-        ax.axis("on" if self._show_axes else "off")
-        ax.set_aspect("equal")
+        # Load head mesh
+        self._head_mesh = self._load_and_prepare_head_mesh()
 
-        # If montage available, draw using MNE helper; otherwise draw placeholder text
+        # Get electrode positions from montage
         if self._montage is not None:
-            # Filter montage channels to visible ones if possible
             try:
                 ch_pos: Dict[str, Sequence[float]] = dict(self._montage.get_positions()["ch_pos"] or {})
                 if ch_pos and self._visible_labels is not None:
-                    ch_pos = {k: v for k, v in ch_pos.items() if k in set(self._visible_labels.tolist())}
-                    filtered = mne.channels.make_dig_montage(ch_pos=ch_pos,
-                                                             nasion=self._montage.nasion,
-                                                             lpa=self._montage.lpa,
-                                                             rpa=self._montage.rpa,
-                                                             coord_frame="head")
+                    # Filter to visible channels
+                    visible_set = set(self._visible_labels.tolist())
+                    ch_pos = {k: v for k, v in ch_pos.items() if k in visible_set}
+                
+                if ch_pos:
+                    electrode_points = np.array(list(ch_pos.values()))
+                    electrode_names = list(ch_pos.keys())
+                    
+                    # Apply offsets (from notebook)
+                    electrode_points[:, 1] += self._electrode_offset_y
+                    electrode_points[:, 2] += self._electrode_offset_z
+                    
+                    self._electrode_points = electrode_points
+                    self._electrode_names = electrode_names
+                    self._b_keep = np.ones(len(electrode_points), dtype=bool)
                 else:
-                    filtered = self._montage
-            except Exception:
-                filtered = self._montage
-
-            # Use MNE's montage plotting on our axes
-            try:
-                # mne defaults to creating its own fig; instead, plot onto our axes when possible
-                # Fallback to standard montage.plot if ax-based plotting is not provided
-                _ = filtered.plot(kind=self._view_kind, show=False)
-                # Transfer artists onto our figure by drawing the returned figure onto canvas as an image
-                # Simpler: close the temp fig and re-call onto our fig if method exists
-                try:
-                    matplotlib.pyplot.close(_)
-                except Exception:
-                    pass
-                # Draw simple 2D sensor scatter as a fallback that respects visible labels
-                pos = filtered.get_positions()
-                ch_xy = []
-                ch_names = []
-                for name, xyz in (pos["ch_pos"] or {}).items():
-                    # Simple orthographic projection to XY (meters)
-                    ch_xy.append([xyz[0], xyz[1]])
-                    ch_names.append(name)
-                if len(ch_xy) > 0:
-                    ch_xy = np.asarray(ch_xy, dtype=float)
-                    ax.scatter(ch_xy[:, 0], ch_xy[:, 1], c="w", s=60, edgecolors="k", zorder=3)
-                    if self.show_chan_labels:
-                        for i, nm in enumerate(ch_names):
-                            ax.text(ch_xy[i, 0], ch_xy[i, 1], nm, color="w", fontsize=9,
-                                    ha="left", va="center")
-                    ax.set_title("MNE Montage (XY projection)")
-                    ax.set_xlabel("X (m)")
-                    ax.set_ylabel("Y (m)")
-                    # Head circle hint
-                    r = max(np.linalg.norm(ch_xy, axis=1).max(), 0.09)
-                    circ = matplotlib.patches.Circle((0, 0), r, fill=False, color="w", alpha=0.3, lw=1.0, zorder=1)
-                    ax.add_patch(circ)
-                    ax.set_xlim(-r * 1.1, r * 1.1)
-                    ax.set_ylim(-r * 1.1, r * 1.1)
-                    ax.invert_yaxis()  # match common head-top plotting convention
-                else:
-                    ax.text(0.5, 0.5, "No channel positions", color="w", ha="center", va="center",
-                            transform=ax.transAxes)
-            except Exception:
-                ax.text(0.5, 0.5, "Failed to plot montage", color="w", ha="center", va="center",
-                        transform=ax.transAxes)
+                    self._electrode_points = None
+                    self._electrode_names = None
+                    self._b_keep = None
+            except Exception as e:
+                logger.warning(f"Failed to extract electrode positions: {e}")
+                self._electrode_points = None
+                self._electrode_names = None
+                self._b_keep = None
         else:
-            ax.text(0.5, 0.5, "Montage not available", color="w", ha="center", va="center",
-                    transform=ax.transAxes)
+            self._electrode_points = None
+            self._electrode_names = None
+            self._b_keep = None
 
-        # Replace canvas in container
-        if self._canvas is not None:
-            self._layout.removeWidget(self._canvas)
-            self._canvas.setParent(None)
-            self._canvas.deleteLater()
-            self._canvas = None
-        self._canvas = FigureCanvas(fig)
-        self._layout.addWidget(self._canvas)
-        self._canvas.draw_idle()
+        # Compute nearest surface points if we have both mesh and electrodes
+        if self._head_mesh is not None and self._electrode_points is not None:
+            self._nearest_points, self._normals = self._compute_electrode_surface_points(
+                self._electrode_points, self._head_mesh)
+        else:
+            self._nearest_points = None
+            self._normals = None
+
+        # Create or update PyVista plotter
+        if self._plotter is None:
+            # Create new plotter - BackgroundPlotter creates its own window by default
+            # We need to embed it in our layout
+            self._plotter = pvqt.BackgroundPlotter(show=False, auto_update=False)
+            # Get the Qt widget from the plotter and add to layout
+            plotter_widget = self._plotter.interactor
+            if plotter_widget is not None:
+                # Remove any existing widget from layout first
+                while self._layout.count():
+                    item = self._layout.takeAt(0)
+                    if item.widget():
+                        item.widget().setParent(None)
+                self._layout.addWidget(plotter_widget)
+        else:
+            # Clear existing actors but keep plotter
+            self._plotter.clear()
+            self._label_actors = []
+        
+        # Set background color
+        bg_rgb = self._pyvista_color_from_str(self.bg_color)
+        self._plotter.set_background(bg_rgb)
+        self._plotter.show_axes()
+
+        # Add head mesh
+        if self._head_mesh is not None:
+            self._mesh_actor = self._plotter.add_mesh(
+                self._head_mesh,
+                color='lightgray',
+                opacity=self._mesh_opacity,
+                show_edges=False
+            )
+        else:
+            # Show placeholder text
+            self._plotter.add_text("Head mesh not available", font_size=12, color='white')
+
+        # Add electrode glyphs
+        if self._nearest_points is not None and self._normals is not None:
+            # Create PolyData with points and normals
+            electrode_glyphs = pv.PolyData(self._nearest_points)
+            electrode_glyphs['normals'] = self._normals
+            
+            # Create cone glyphs oriented along normals
+            cone = pv.Cone(radius=self._cone_radius, height=self._cone_height, resolution=8)
+            self._electrode_actor = self._plotter.add_mesh(
+                electrode_glyphs.glyph(orient='normals', scale=False, factor=1.0, geom=cone),
+                color='red',
+                show_edges=False
+            )
+            
+            # Add text labels
+            if self._show_labels and self._electrode_names is not None:
+                self._label_actors = []
+                for i, name in enumerate(self._electrode_names):
+                    label_actor = self._plotter.add_point_labels(
+                        self._nearest_points[i:i+1],
+                        [name],
+                        font_size=10,
+                        text_color='black',
+                        point_color='red',
+                        always_visible=True,
+                        shape_opacity=0.0
+                    )
+                    self._label_actors.append(label_actor)
+        elif self._electrode_points is not None:
+            # Electrodes available but no mesh - show at original positions
+            electrode_glyphs = pv.PolyData(self._electrode_points)
+            cone = pv.Cone(radius=self._cone_radius, height=self._cone_height, resolution=8)
+            self._electrode_actor = self._plotter.add_mesh(
+                electrode_glyphs.glyph(scale=False, factor=1.0, geom=cone),
+                color='red',
+                show_edges=False
+            )
 
     def update_visualization(self, data: np.ndarray, timestamps: np.ndarray):
-        # Static montage view; no per-sample updates required.
-        return None
+        """Update electrode colors based on incoming data values."""
+        if timestamps.size == 0 or self._electrode_actor is None or self._b_keep is None:
+            return None
+
+        # Filter data to visible electrodes
+        data = data[self._b_keep, -1]
+        data = data.astype(float).ravel()
+
+        if data.size == 0 or not np.all(np.isfinite(data)):
+            return None
+
+        # Map data values to colors using matplotlib colormap
+        try:
+            import matplotlib.pyplot as plt
+            import matplotlib.colors as mcolors
+            
+            # Normalize data to [0, 1] range based on lower/upper limits
+            range_val = self.upper_limit - self.lower_limit
+            if range_val <= 0:
+                range_val = 1.0
+            data_normalized = np.clip(
+                (data - self.lower_limit) / range_val,
+                0.0, 1.0
+            )
+            
+            # Get colormap - try to use color_set, fallback to viridis
+            try:
+                if hasattr(plt.cm, self.color_set):
+                    cmap = plt.get_cmap(self.color_set)
+                else:
+                    cmap = plt.get_cmap('viridis')
+            except Exception:
+                cmap = plt.get_cmap('viridis')
+            
+            # Map normalized values to colors (RGBA, 0-1 range)
+            colors = cmap(data_normalized)
+            
+            # Convert to RGB for PyVista (drop alpha, use 0-1 range)
+            colors_rgb = colors[:, :3]
+            
+            # Update electrode actor colors
+            if self._nearest_points is not None:
+                electrode_glyphs = pv.PolyData(self._nearest_points)
+                electrode_glyphs['normals'] = self._normals
+                electrode_glyphs['colors'] = (colors_rgb * 255).astype(np.uint8)
+                
+                cone = pv.Cone(radius=self._cone_radius, height=self._cone_height, resolution=8)
+                
+                # Remove old actor and add new one with colors
+                self._plotter.remove_actor(self._electrode_actor)
+                self._electrode_actor = self._plotter.add_mesh(
+                    electrode_glyphs.glyph(orient='normals', scale=False, factor=1.0, geom=cone),
+                    scalars='colors',
+                    rgb=True,
+                    show_edges=False
+                )
+        except Exception as e:
+            logger.warning(f"Failed to update electrode colors: {e}")
 
     # -------------------- Properties exposed via Widgets -------------------- #
     @property
@@ -205,20 +388,64 @@ class TopoMNE(RendererMergeDataSources, MPLRenderer):
         self.reset_renderer(reset_channel_labels=True)
 
     @property
-    def view_kind(self) -> str:
-        return self._view_kind
+    def head_mesh_path(self) -> str:
+        return str(self._head_mesh_path)
 
-    @view_kind.setter
-    def view_kind(self, value: str):
-        self._view_kind = value
+    @head_mesh_path.setter
+    def head_mesh_path(self, value: str):
+        self._head_mesh_path = Path(value).expanduser().resolve()
+        self.reset_renderer(reset_channel_labels=True)
+
+    @property
+    def mesh_opacity(self) -> float:
+        return self._mesh_opacity
+
+    @mesh_opacity.setter
+    def mesh_opacity(self, value: float):
+        self._mesh_opacity = float(np.clip(value, 0.0, 1.0))
         self.reset_renderer(reset_channel_labels=False)
 
     @property
-    def show_axes(self) -> bool:
-        return self._show_axes
+    def cone_radius(self) -> float:
+        return self._cone_radius
 
-    @show_axes.setter
-    def show_axes(self, value: bool):
-        self._show_axes = value
+    @cone_radius.setter
+    def cone_radius(self, value: float):
+        self._cone_radius = float(value)
         self.reset_renderer(reset_channel_labels=False)
 
+    @property
+    def cone_height(self) -> float:
+        return self._cone_height
+
+    @cone_height.setter
+    def cone_height(self, value: float):
+        self._cone_height = float(value)
+        self.reset_renderer(reset_channel_labels=False)
+
+    @property
+    def show_labels(self) -> bool:
+        return self._show_labels
+
+    @show_labels.setter
+    def show_labels(self, value: bool):
+        self._show_labels = bool(value)
+        self.reset_renderer(reset_channel_labels=True)
+
+    @property
+    def electrode_offset_y(self) -> float:
+        return self._electrode_offset_y
+
+    @electrode_offset_y.setter
+    def electrode_offset_y(self, value: float):
+        self._electrode_offset_y = float(value)
+        self.reset_renderer(reset_channel_labels=True)
+
+    @property
+    def electrode_offset_z(self) -> float:
+        return self._electrode_offset_z
+
+    @electrode_offset_z.setter
+    def electrode_offset_z(self, value: float):
+        self._electrode_offset_z = float(value)
+        self.reset_renderer(reset_channel_labels=True)
