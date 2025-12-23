@@ -7,14 +7,43 @@ class TopoMNEControlPanel(IControlPanel):
     """
     A panel of configuration widgets for configuring a TopoMNE renderer.
     This widget assumes the renderer is an instance of TopoMNE.
-
-    TODO: the folloinwg controls aren't relevant: ["Lower Limit", "Upper Limit", "Highpass Cutoff", "Lower Limit"]
     """
     def __init__(self, renderer, name="TopoMNEControlPanelWidget", **kwargs):
         super().__init__(renderer, name=name, **kwargs)  # Will call _init_widgets and reset_widgets
 
     def _init_widgets(self):
         super()._init_widgets()
+
+        # Hide irrelevant controls that are not applicable to TopoMNE
+        # Lower Limit
+        ll_spinbox = self.findChild(QtWidgets.QDoubleSpinBox, name="LL_SpinBox")
+        if ll_spinbox is not None:
+            ll_spinbox.setVisible(False)
+            # Find the label at the same row (column 0)
+            row, col, row_span, col_span = self.layout().getItemPosition(self.layout().indexOf(ll_spinbox))
+            label_item = self.layout().itemAtPosition(row, 0)
+            if label_item is not None:
+                label_item.widget().setVisible(False)
+
+        # Upper Limit
+        ul_spinbox = self.findChild(QtWidgets.QDoubleSpinBox, name="UL_SpinBox")
+        if ul_spinbox is not None:
+            ul_spinbox.setVisible(False)
+            # Find the label at the same row (column 0)
+            row, col, row_span, col_span = self.layout().getItemPosition(self.layout().indexOf(ul_spinbox))
+            label_item = self.layout().itemAtPosition(row, 0)
+            if label_item is not None:
+                label_item.widget().setVisible(False)
+
+        # Highpass Cutoff
+        hp_spinbox = self.findChild(QtWidgets.QDoubleSpinBox, name="HP_SpinBox")
+        if hp_spinbox is not None:
+            hp_spinbox.setVisible(False)
+            # Find the label at the same row (column 0)
+            row, col, row_span, col_span = self.layout().getItemPosition(self.layout().indexOf(hp_spinbox))
+            label_item = self.layout().itemAtPosition(row, 0)
+            if label_item is not None:
+                label_item.widget().setVisible(False)
 
         # Continue filling in the grid of widgets
         row_ix = self._last_row
