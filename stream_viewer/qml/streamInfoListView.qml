@@ -15,7 +15,7 @@ Rectangle {
         delegate:
             Rectangle {
                 color: "lightgrey"
-                width: parent.width
+                width: parent ? parent.width : 0
                 height: 80
                 GridLayout {
                     anchors.margins: 2

@@ -122,8 +122,7 @@ class LinePG(RendererDataTimeSeries, PGRenderer):
                 legend = None
 
             pw.showGrid(x=True, y=True, alpha=0.3)
-            font = QtGui.QFont()
-            font.setPointSize(self.font_size - 2)
+            font = QtGui.QFont("Arial", int(self.font_size - 2))
             pw.setXRange(0, self.duration)
             pw.getAxis("bottom").setTickFont(font)
             pw.getAxis("bottom").setStyle(showValues=self.ylabel_as_title)
@@ -285,8 +284,7 @@ class LinePG(RendererDataTimeSeries, PGRenderer):
                         text.setText(_m)
                     else:
                         text = pg.TextItem(text=_m, angle=90)
-                        font = QtGui.QFont()
-                        font.setPointSize(self.font_size + 2.0)
+                        font = QtGui.QFont("Arial", int(self.font_size + 2.0))
                         text.setFont(font)
                     text.setPos(_t % self.duration, -1)  # y_offset)
                     pw.addItem(text)

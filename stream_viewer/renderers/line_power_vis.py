@@ -147,8 +147,7 @@ class LinePowerVis(RendererDataTimeSeries, PGRenderer):
 
         labelStyle = {'color': '#FFF', 'font-size': str(self.font_size) + 'pt'}
 
-        font = QtGui.QFont()
-        font.setPointSize(self.font_size - 2)
+        font = QtGui.QFont("Arial", int(self.font_size - 2))
 
         # Get initial time vector
         if len(self._buffers) > 0 and self._buffers[0]._data.size > 0:
