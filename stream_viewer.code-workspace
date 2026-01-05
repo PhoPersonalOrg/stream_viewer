@@ -59,6 +59,41 @@
 			"activityBar.activeBorder": "#ace22c",
 			"activityBarBadge.foreground": "#000000",
 			"activityBarBadge.background": "#ace22c"
-		}
+		},
+		"actionButtons": {
+
+			"commands": [
+				{
+					"name": "Back",
+					"color": "white",
+					"useVsCodeApi": true,
+					"command": "workbench.action.navigateBack"
+				},
+				{
+					"name": "Forward",
+					"color": "white",
+					"useVsCodeApi": true,
+					"command": "workbench.action.navigateForward"
+				},
+				{
+					"name": "⇥ Convert to File Spaces",
+					"color": "white",
+					"tooltip": "Convert tabs to spaces in the current file",
+					"useVsCodeApi": true,
+					"command": "editor.action.indentationToSpaces"
+				},
+				{
+					"name": "Launch Stream Viewer GUI",
+					"color": "black",
+					"tooltip": "Launch the Stream Viewer application",
+					"useVsCodeApi": false,
+					"command": "uv run lsl_viewer"
+				}
+			],
+			"defaultColor": "grey",
+			"reloadButton": "↻",
+			"loadNpmCommands": true
+		},
+
 	}
 }
