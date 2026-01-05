@@ -124,4 +124,3 @@ Currently, the heatmap uses a fixed-size array that rolls/shifts data in Scroll 
 ## Edge Cases
 
 - Empty buffer at start: Initialize with small default size
-- Session restart: Reset clears history (expected behavior)
