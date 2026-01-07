@@ -96,7 +96,15 @@ class LSLInfoItemModel:
 
         if len(new_df) > 0:
             self.beginInsertRows(QtCore.QModelIndex(), len(self._data), len(self._data) + len(new_df) - 1)
-            self._data = pd.concat([self._data, new_df.drop(columns=['_merge'])], ignore_index=True)
+            new_df_clean = new_df.drop(columns=['_merge'])
+            # Ensure both DataFrames have the same columns to avoid FutureWarning
+            # Reindex to ensure column alignment (fills missing columns with NaN)
+            if len(self._data) > 0:
+                # Get union of columns from both DataFrames
+                all_cols = list(self._data.columns) + [c for c in new_df_clean.columns if c not in self._data.columns]
+                self._data = self._data.reindex(columns=all_cols)
+                new_df_clean = new_df_clean.reindex(columns=all_cols)
+            self._data = pd.concat([self._data, new_df_clean], ignore_index=True, sort=False)
             self.endInsertRows()
 
     @QtCore.Slot(float)
