@@ -2141,7 +2141,7 @@ wheels = [
 
 [[package]]
 name = "phopymnehelper"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "../PhoPyMNEHelper" }
 dependencies = [
     { name = "gmsh" },
@@ -2158,7 +2158,7 @@ dependencies = [
 requires-dist = [
     { name = "gmsh", specifier = ">=4.15.0" },
     { name = "meshio", specifier = ">=5.3.5" },
-    { name = "mne", editable = "../../mne-python" },
+    { name = "mne", specifier = ">=1.8.0" },
     { name = "nptyping", specifier = ">=2.5.0" },
     { name = "numpy", specifier = "~=1.20" },
     { name = "pandas", specifier = ">=1.5.3,<3.0.0" },

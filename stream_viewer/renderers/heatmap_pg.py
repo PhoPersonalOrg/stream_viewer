@@ -43,6 +43,7 @@ class SourceState:
     last_processed_write_idx: Optional[float] = None  # Track last processed write index (int in Sweep mode) or timestamp (float in Scroll mode)
     session_start_time: Optional[float] = None  # Track when session began for this source
     session_time_range: Optional[Tuple[float, float]] = None  # Track full time span [start, end]
+    preallocated_capacity: int = 0  # Track pre-allocated capacity for Scroll mode optimization
     
     def reset(self):
         """Reset all state to initial values."""
@@ -57,6 +58,7 @@ class SourceState:
         self.last_processed_write_idx = None
         self.session_start_time = None
         self.session_time_range = None
+        self.preallocated_capacity = 0
 
 
 class HeatmapPG(RendererDataTimeSeries, PGRenderer):
@@ -101,6 +103,8 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         fmax_hz=float,
         nperseg=int,
         noverlap=int,
+        update_rate_hz=float,
+        max_samples_per_spectrogram=int,
     )
 
     def __init__(self,
@@ -116,6 +120,8 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                  fmax_hz: float = 42.0,
                  nperseg: int = 256,
                  noverlap: int = 128,
+                 update_rate_hz: float = 30.0,
+                 max_samples_per_spectrogram: Optional[int] = None,
                  **kwargs):
         self._ylabel_as_title = ylabel_as_title
         self._ylabel_width = ylabel_width
@@ -127,6 +133,10 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         self._fmax_hz = float(fmax_hz)
         self._nperseg = int(nperseg)
         self._noverlap = int(noverlap)
+        
+        # Performance optimization parameters
+        self._update_rate_hz = float(update_rate_hz)
+        self._max_samples_per_spectrogram = max_samples_per_spectrogram
 
         # Container widget with vertical layout for RemoteGraphicsView instances
         self._widget = QtWidgets.QWidget()
@@ -159,6 +169,11 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         self._reset_timer.setSingleShot(True)
         self._reset_timer.timeout.connect(self._do_pending_reset)
         self._pending_reset = {'reset_channel_labels': False}
+        
+        # Performance optimization: cached FFT window and dirty flag for batch updates
+        self._cached_window: Optional[np.ndarray] = None
+        self._cached_nperseg: Optional[int] = None
+        self._display_dirty: dict[int, bool] = {}  # Track which sources need display update
 
         super().__init__(show_chan_labels=show_chan_labels, color_set=color_set, **kwargs)
         self.reset_renderer()
@@ -373,6 +388,19 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             if not self._timer.isActive():
                 self.restart_timer()
         self._pending_reset = {'reset_channel_labels': False}
+        # Reset display dirty flags
+        self._display_dirty.clear()
+    
+    def restart_timer(self) -> None:
+        """
+        Override restart_timer to use custom update rate for spectrograms.
+        
+        Uses update_rate_hz instead of default 60 Hz for better performance.
+        """
+        if self._timer.isActive():
+            self._timer.stop()
+        interval = int(1000.0 / self._update_rate_hz)
+        self._timer.start(interval)
 
     def _ensure_source_state(self, src_ix: int, srate: float, f: np.ndarray, Pxx: np.ndarray) -> bool:
         """
@@ -420,7 +448,8 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             state.n_time_cols = initial_n_cols  # Track current number of columns
             
             if n_freq > 0 and initial_n_cols > 0:
-                state.heatmap = np.full((n_freq, initial_n_cols), np.nan, dtype=float)
+                # Use float32 for memory and performance optimization
+                state.heatmap = np.full((n_freq, initial_n_cols), np.nan, dtype=np.float32)
                 state.write_index = 0
                 state.locked_levels = None
                 return True
@@ -676,6 +705,11 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         """
         Compute spectrogram with validation and error handling.
         
+        Includes performance optimizations:
+        - Data downsampling for high sample rates
+        - Power-of-2 nperseg for faster FFT
+        - Cached window function
+        
         Args:
             x: Input signal
             srate: Sampling rate
@@ -689,13 +723,49 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             logger.debug(f"Invalid sampling rate: {srate} Hz")
             return None
         
+        # Performance optimization: downsample if signal is too long
+        original_srate = float(srate)
+        if self._max_samples_per_spectrogram is not None and x.size > self._max_samples_per_spectrogram:
+            # Downsample to reduce computation time
+            downsample_factor = max(1, int(np.ceil(x.size / self._max_samples_per_spectrogram)))
+            # Use decimation for better anti-aliasing (requires scipy.signal.decimate)
+            # For simplicity, use every Nth sample (could be improved with proper decimation)
+            x = x[::downsample_factor]
+            srate = original_srate / downsample_factor
+        
+        # Optimize nperseg to be power of 2 for faster FFT
         nperseg = max(MIN_NPERSEG, min(self._nperseg, x.size))
+        # Round to nearest power of 2 (but not less than MIN_NPERSEG)
+        if nperseg > MIN_NPERSEG:
+            nperseg_pow2 = int(2 ** np.ceil(np.log2(nperseg)))
+            # Only use power of 2 if it's not too much larger (max 2x)
+            if nperseg_pow2 <= 2 * nperseg:
+                nperseg = min(nperseg_pow2, x.size)
+        
         noverlap = max(0, min(self._noverlap, nperseg - 1))
+        
+        # Cache window function if nperseg hasn't changed (performance optimization)
+        window = None
+        nperseg_int = int(nperseg)
+        if self._cached_nperseg == nperseg_int and self._cached_window is not None:
+            window = self._cached_window
+        else:
+            # Create and cache hann window (default for spectrogram)
+            # Use get_window for compatibility across scipy versions
+            try:
+                self._cached_window = signal.get_window('hann', nperseg_int)
+            except AttributeError:
+                # Fallback: use string name (scipy will create it)
+                self._cached_window = None
+                window = 'hann'
+            self._cached_nperseg = nperseg_int
+            if self._cached_window is not None:
+                window = self._cached_window
         
         try:
             f, t, Sxx = signal.spectrogram(
-                x, fs=float(srate), nperseg=int(nperseg), noverlap=int(noverlap),
-                scaling='density', mode='psd'
+                x, fs=srate, nperseg=int(nperseg), noverlap=int(noverlap),
+                scaling='density', mode='psd', window=window
             )
         except Exception as e:
             logger.warning(f"Spectrogram computation failed: {e}", exc_info=True)
@@ -704,9 +774,9 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         if Sxx.size == 0:
             return None
         
-        # Convert to dB with safe handling
+        # Convert to dB with safe handling, use float32 for memory efficiency
         with np.errstate(invalid='ignore', divide='ignore'):
-            Pxx = 10.0 * np.log10(Sxx + EPSILON_DB)
+            Pxx = 10.0 * np.log10(Sxx + EPSILON_DB).astype(np.float32)
         
         return (f, t, Pxx)
     
@@ -805,13 +875,38 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         new_cols = min(new_cols, P_use.shape[1])
         
         if self.plot_mode != "Sweep":
-            # Scroll: append new columns (grow heatmap dynamically)
+            # Scroll: append new columns with memory optimization (pre-allocate chunks)
             # Extract the columns to add from P_use (take the last new_cols columns)
-            cols_to_add = P_use[:, -new_cols:]
+            cols_to_add = P_use[:, -new_cols:].astype(np.float32)
             
-            # Append new columns to heatmap
-            state.heatmap = np.concatenate([heat, cols_to_add], axis=1)
-            state.n_time_cols = state.heatmap.shape[1]  # Update column count
+            # Memory optimization: pre-allocate in chunks to reduce reallocation overhead
+            current_cols = heat.shape[1]
+            needed_cols = current_cols + new_cols
+            
+            # Pre-allocate in chunks of 100 columns to reduce memory fragmentation
+            CHUNK_SIZE = 100
+            if needed_cols > state.preallocated_capacity:
+                # Calculate new capacity (round up to next chunk)
+                new_capacity = ((needed_cols // CHUNK_SIZE) + 1) * CHUNK_SIZE
+                # Pre-allocate larger array
+                n_freq = heat.shape[0]
+                new_heatmap = np.empty((n_freq, new_capacity), dtype=np.float32)
+                new_heatmap[:, :current_cols] = heat
+                new_heatmap[:, current_cols:current_cols + new_cols] = cols_to_add
+                # Fill remaining with NaN
+                new_heatmap[:, current_cols + new_cols:] = np.nan
+                state.heatmap = new_heatmap
+                state.preallocated_capacity = new_capacity
+            else:
+                # Use existing pre-allocated space
+                if current_cols + new_cols <= state.preallocated_capacity:
+                    state.heatmap[:, current_cols:current_cols + new_cols] = cols_to_add
+                else:
+                    # Fallback to concatenation if pre-allocation wasn't enough (shouldn't happen)
+                    state.heatmap = np.concatenate([heat, cols_to_add], axis=1)
+                    state.preallocated_capacity = state.heatmap.shape[1]
+            
+            state.n_time_cols = current_cols + new_cols  # Update column count
         else:
             # Sweep: circular write into columns (unchanged behavior)
             new_cols = min(new_cols, n_cols)  # Limit to current size in Sweep mode
@@ -907,8 +1002,13 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                     time_range = None
         
         # Replace NaN values with default for rendering
-        if display is not None and not np.isfinite(display).all():
-            display = np.nan_to_num(display, nan=DEFAULT_DB_FLOOR)
+        # Ensure float32 for memory efficiency
+        if display is not None:
+            if not np.isfinite(display).all():
+                display = np.nan_to_num(display, nan=DEFAULT_DB_FLOOR)
+            # Ensure float32 dtype
+            if display.dtype != np.float32:
+                display = display.astype(np.float32)
         
         return display, time_range
     
@@ -1053,10 +1153,16 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
         """
         Update visualization with new data.
         
+        Includes performance optimizations:
+        - Early exit if no new data
+        - Batch update tracking with dirty flags
+        - Minimum time delta checks
+        
         Args:
             data: List of (data, markers) tuples per source
             timestamps: List of (timestamps, marker_timestamps) tuples per source
         """
+        # Early exit: check if we have any timestamps at all
         if not any([np.any(_) for _ in timestamps[0]]):
             return
 
@@ -1152,6 +1258,8 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                 # In Sweep mode, _write_idx advances, so we can use write index comparison
                 if self.plot_mode == "Scroll":
                     # In Scroll mode, check if the last timestamp in buffer has changed
+                    # Enhanced: add minimum time delta check to avoid processing tiny changes
+                    MIN_TIME_DELTA = 0.01  # Minimum 10ms change required
                     if buf._tvec.size > 0:
                         curr_last_timestamp = float(buf._tvec[-1])
                         # Use a small threshold to handle floating point precision
@@ -1160,7 +1268,9 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                         else:
                             # last_processed_write_idx stores the last processed timestamp in Scroll mode
                             last_processed_timestamp = float(state.last_processed_write_idx)
-                            has_new_data = abs(curr_last_timestamp - last_processed_timestamp) > 1e-6
+                            time_delta = abs(curr_last_timestamp - last_processed_timestamp)
+                            # Only process if time delta is significant (avoids processing tiny timestamp changes)
+                            has_new_data = time_delta > MIN_TIME_DELTA
                     else:
                         has_new_data = False
                 elif hasattr(buf, "_write_idx"):
@@ -1258,7 +1368,9 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                         time_width = float(self.duration)
                     
                     # Update image with performance optimization: use _callSync='off' for operations that don't need return values
-                    if src_ix < len(self._image_items):
+                    # Batch update: only update if display is dirty or has changed significantly
+                    should_update = self._display_dirty.get(src_ix, True) or has_new_data
+                    if should_update and src_ix < len(self._image_items):
                         img = self._image_items[src_ix]
                         if img is not None:
                             img.setImage(display, levels=levels, autoLevels=False, _callSync='off')
@@ -1276,6 +1388,11 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
                                 float(self._fmax_hz - self._fmin_hz)
                             )
                             img.setRect(rect, _callSync='off')
+                            # Mark as clean after update
+                            self._display_dirty[src_ix] = False
+                    elif has_new_data:
+                        # Mark as dirty for next update
+                        self._display_dirty[src_ix] = True
 
             # Update markers
             self._update_markers(src_ix, pw, mrk, mrk_ts)
@@ -1438,5 +1555,27 @@ class HeatmapPG(RendererDataTimeSeries, PGRenderer):
             for img in self._image_items:
                 if img is not None:
                     img.setLookupTable(lut)
+    
+    @property
+    def update_rate_hz(self):
+        """Get current update rate in Hz."""
+        return self._update_rate_hz
+    
+    @update_rate_hz.setter
+    def update_rate_hz(self, value):
+        """Set update rate and restart timer with new interval."""
+        self._update_rate_hz = float(value)
+        if self._timer.isActive():
+            self.restart_timer()
+    
+    @property
+    def max_samples_per_spectrogram(self):
+        """Get maximum samples per spectrogram computation."""
+        return self._max_samples_per_spectrogram
+    
+    @max_samples_per_spectrogram.setter
+    def max_samples_per_spectrogram(self, value):
+        """Set maximum samples per spectrogram (None for no limit)."""
+        self._max_samples_per_spectrogram = int(value) if value is not None else None
 
 

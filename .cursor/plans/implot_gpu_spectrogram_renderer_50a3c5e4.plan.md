@@ -72,8 +72,6 @@ graph TD
 ```
 
 
-
-
 ## Implementation Steps
 
 ### 1. Research and Select Python Binding
