@@ -3,7 +3,6 @@
 import sys
 import logging
 import json
-import time
 from typing import Tuple, List
 import numpy as np
 import pandas as pd
@@ -297,7 +296,6 @@ class RendererBufferData(RendererFormatData):
         self._plot_mode = plot_mode
         self._duration = duration
         self._auto_scale = auto_scale
-        self._channel_last_received = {}  # Track last received timestamp per channel: {channel_name: timestamp}
         super().__init__(**kwargs)
 
     def reset_buffers(self):
@@ -315,7 +313,6 @@ class RendererBufferData(RendererFormatData):
                                   List[Tuple[np.ndarray, np.ndarray]]]:
         collect_data = [(np.array([[]], dtype=_._data.dtype), np.array([], dtype=object)) for _ in self._buffers]
         collect_timestamps = [(np.array([]), np.array([])) for _ in self._buffers]
-        current_time = time.time()
         for src_ix, src in enumerate(self._data_sources):
             data, timestamps = src.fetch_data()
             if data.size == 0:
@@ -323,18 +320,6 @@ class RendererBufferData(RendererFormatData):
             chan_states = self._sep_chan_states[src_ix]
             self._buffers[src_ix].update(data, timestamps, chan_states)
             data, timestamps = self._buffers[src_ix].contents  # (.data, .markers), (.data_ts, .mrk_ts)
-
-            # Update channel activity tracking - record when each visible channel received data
-            if data[0].size > 0 and len(chan_states) > 0:
-                # Get visible channels - these match the data array after buffer filtering
-                visible_mask = chan_states['vis'] if 'vis' in chan_states.columns else pd.Series([True] * len(chan_states), index=chan_states.index)
-                visible_chans = chan_states[visible_mask]
-                # The data array has been filtered to only include visible channels, so indices match
-                for chan_idx, (_, row) in enumerate(visible_chans.iterrows()):
-                    channel_name = row['name']
-                    # Check if this channel has new data (non-empty data array for this channel)
-                    if chan_idx < data[0].shape[0] and data[0].shape[1] > 0 and np.any(~np.isnan(data[0][chan_idx, :])):
-                        self._channel_last_received[channel_name] = current_time
 
             # Optional auto-scaling, but only on non-marker data.
             if self._auto_scale.lower() != 'none' and np.any(data[0]) and not np.any(data[1]):

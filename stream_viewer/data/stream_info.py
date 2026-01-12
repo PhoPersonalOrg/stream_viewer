@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import pylsl
 import typing
+import time
 
 
 class LSLInfoItemModel:
@@ -47,11 +48,15 @@ class LSLInfoItemModel:
     EffRateRole = QtCore.Qt.UserRole + 7
     ChanFmtRole = QtCore.Qt.UserRole + 8
     ChanCountRole = QtCore.Qt.UserRole + 9
+    ActivityStateRole = QtCore.Qt.UserRole + 10
+    NotifyEnabledRole = QtCore.Qt.UserRole + 11
 
     def __init__(self, refresh_interval=None):
         super().__init__()
         self._data = pd.DataFrame(columns=self.col_names)
         self._resolver = pylsl.ContinuousResolver()
+        self._stream_last_received = {}  # Track last received timestamp per stream: {(name, type, hostname, uid): timestamp}
+        self._stream_notify_enabled = {}  # Track notify preferences per stream: {(name, type, hostname, uid): bool}
         self.refresh()
         if refresh_interval is not None:
             self._refresh_timer = QtCore.QTimer()
@@ -90,6 +95,11 @@ class LSLInfoItemModel:
             b_match = (self._data[self.key_names] == (lost_row[self.key_names])).all(axis=1)
             if np.any(b_match):
                 drop_idx = np.where(b_match)[0][0]
+                # Clean up tracking data for removed stream
+                stream_key = (lost_row['name'], lost_row['type'], lost_row['hostname'], lost_row['uid'])
+                if stream_key in self._stream_last_received:
+                    del self._stream_last_received[stream_key]
+                # Keep notify preferences in case stream reconnects
                 self.beginRemoveRows(QtCore.QModelIndex(), drop_idx, drop_idx + 1)
                 self._data = self._data.drop(index=b_match[b_match].index)
                 self.endRemoveRows()
@@ -116,6 +126,9 @@ class LSLInfoItemModel:
                     & (self._data['uid'] == stream_data['uid'])
             if np.any(b_row):  # Can be empty when multiple streams with same name and one disappears.
                 self._data.loc[b_row, 'effective_rate'] = new_rate
+                # Update stream activity tracking - when rate is updated, data was received
+                stream_key = (stream_data['name'], stream_data['type'], stream_data['hostname'], stream_data['uid'])
+                self._stream_last_received[stream_key] = time.time()
                 row_ix = self._data.index[b_row].values[0]
                 col_ix = self._data.columns.get_loc('effective_rate') if isinstance(self, QtCore.QAbstractTableModel)\
                     else 0
@@ -134,7 +147,9 @@ class LSLInfoItemModel:
             self.NomRateRole: b'nominal_srate',
             self.EffRateRole: b'effective_rate',
             self.ChanFmtRole: b'channel_format',
-            self.ChanCountRole: b'channel_count'
+            self.ChanCountRole: b'channel_count',
+            self.ActivityStateRole: b'activityState',
+            self.NotifyEnabledRole: b'notifyEnabled'
         }
 
     def data(self, index: QtCore.QModelIndex, role: int = QtCore.Qt.DisplayRole) -> typing.Any:
@@ -153,6 +168,21 @@ class LSLInfoItemModel:
         elif role == self.SeriesRole:
             return row
 
+        elif role == self.ActivityStateRole:
+            # Return activity state: 'active' (<2s), 'warning' (2-10s), 'critical' (>10s), 'none' (never)
+            stream_key = (row['name'], row['type'], row['hostname'], row['uid'])
+            if stream_key in self._stream_last_received:
+                time_since = time.time() - self._stream_last_received[stream_key]
+                if time_since < 2.0:
+                    return 'active'
+                elif time_since < 10.0:
+                    return 'warning'
+                else:
+                    return 'critical'
+            return 'none'
+        elif role == self.NotifyEnabledRole:
+            stream_key = (row['name'], row['type'], row['hostname'], row['uid'])
+            return self._stream_notify_enabled.get(stream_key, False)
         else:
             rns = self.roleNames()
             if role in rns.keys():
@@ -161,6 +191,20 @@ class LSLInfoItemModel:
                     return "irreg." if dat == 0 else f"{dat:.2f}"
                 return dat
         return None
+
+    def setNotifyEnabled(self, stream_key: tuple, enabled: bool):
+        """Set notify preference for a stream."""
+        self._stream_notify_enabled[stream_key] = enabled
+        # Find and update the model index to trigger QML update
+        b_row = (self._data['name'] == stream_key[0]) \
+                & (self._data['type'] == stream_key[1]) \
+                & (self._data['hostname'] == stream_key[2]) \
+                & (self._data['uid'] == stream_key[3])
+        if np.any(b_row):
+            row_ix = self._data.index[b_row].values[0]
+            col_ix = 0 if isinstance(self, QtCore.QAbstractListModel) else self._data.columns.get_loc('name')
+            cell_index = self.index(row_ix, col_ix)
+            self.dataChanged.emit(cell_index, cell_index, [self.NotifyEnabledRole])
 
 
 class LSLStreamInfoListModel(LSLInfoItemModel, QtCore.QAbstractListModel):

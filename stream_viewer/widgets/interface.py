@@ -1,7 +1,6 @@
 from qtpy import QtWidgets
 from qtpy import QtCore
 from qtpy import QtGui
-import time
 
 
 class IControlPanel(QtWidgets.QWidget):
@@ -19,10 +18,6 @@ class IControlPanel(QtWidgets.QWidget):
         self.setObjectName(name)
         self.setLayout(QtWidgets.QGridLayout())
         # self._renderer = None  # Will be set in reset_widgets
-        self._channel_notify_enabled = {}  # Track which channels have notifications enabled
-        self._channel_activity_lights = {}  # Store references to activity light widgets
-        self._channel_notify_checkboxes = {}  # Store references to notify checkbox widgets
-        self._alerted_channels = set()  # Track channels that have been alerted to prevent spam
         self._init_widgets()
         renderer.chan_states_changed.connect(self.reset_widgets)
         self.reset_widgets(renderer)
@@ -41,20 +36,11 @@ class IControlPanel(QtWidgets.QWidget):
         _tree.setHeaderHidden(True)
         _tree.setFrameShape(QtWidgets.QFrame.NoFrame)
         _tree.viewport().setAutoFillBackground(False)
-        _tree.setColumnCount(3)  # Channel name, activity light, notify checkbox
-        _tree.setColumnWidth(0, 150)  # Channel name column
-        _tree.setColumnWidth(1, 20)  # Activity light column
-        _tree.setColumnWidth(2, 20)  # Notify checkbox column
         tli = QtWidgets.QTreeWidgetItem(_tree)
         tli.setText(0, "View Channels")
         tli.setExpanded(False)  # Start collapsed because list of channels may be very long.
         _tree.addTopLevelItem(tli)
         self.layout().addWidget(_tree, row_ix, 0, 1, 2)
-        
-        # Monitor timer for checking channel activity
-        self._monitor_timer = QtCore.QTimer()
-        self._monitor_timer.timeout.connect(self._check_channel_activity)
-        self._monitor_timer.start(1500)  # Check every 1.5 seconds
 
         # show names checkbox
         row_ix += 1
@@ -123,35 +109,10 @@ class IControlPanel(QtWidgets.QWidget):
         if len(renderer.chan_states) > 0:
             tli = _tree.topLevelItem(0)
             _ = tli.takeChildren()
-            # Clear old widget references
-            for channel_name in list(self._channel_activity_lights.keys()):
-                if channel_name not in renderer.chan_states['name'].values:
-                    del self._channel_activity_lights[channel_name]
-                    if channel_name in self._channel_notify_checkboxes:
-                        del self._channel_notify_checkboxes[channel_name]
-                    if channel_name in self._channel_notify_enabled:
-                        del self._channel_notify_enabled[channel_name]
-            
             for label, vis in renderer.chan_states[['name', 'vis']].values:
                 chstate_item = QtWidgets.QTreeWidgetItem(tli)
                 chstate_item.setText(0, label)
                 chstate_item.setCheckState(0, QtCore.Qt.Checked if vis else QtCore.Qt.Unchecked)
-                
-                # Add activity light indicator (column 1)
-                activity_light = QtWidgets.QLabel()
-                activity_light.setFixedSize(12, 12)
-                activity_light.setStyleSheet("background-color: gray; border-radius: 6px;")
-                activity_light.setToolTip("Activity indicator: green = receiving data, gray = no data")
-                _tree.setItemWidget(chstate_item, 1, activity_light)
-                self._channel_activity_lights[label] = activity_light
-                
-                # Add notify checkbox (column 2)
-                notify_checkbox = QtWidgets.QCheckBox()
-                notify_checkbox.setToolTip("Notify when no data received for >10 seconds")
-                notify_checkbox.setChecked(self._channel_notify_enabled.get(label, False))
-                notify_checkbox.stateChanged.connect(lambda state, ch=label: self._on_notify_changed(ch, state))
-                _tree.setItemWidget(chstate_item, 2, notify_checkbox)
-                self._channel_notify_checkboxes[label] = notify_checkbox
         _tree.itemChanged.connect(renderer.chantree_itemChanged)
 
         # Initialize keyboard shortcuts once (scoped to the tree and its children)
@@ -274,62 +235,3 @@ class IControlPanel(QtWidgets.QWidget):
         elif chosen == act_deselect:
             self._uncheck_all_channels()
 
-    def _on_notify_changed(self, channel_name: str, state: int):
-        """Handle notify checkbox state change."""
-        self._channel_notify_enabled[channel_name] = (state == QtCore.Qt.Checked)
-        # Reset alert state when toggled on
-        if state == QtCore.Qt.Checked:
-            self._alerted_channels.discard(channel_name)
-
-    def _update_activity_lights(self):
-        """Update activity light colors based on channel last received timestamps."""
-        if not hasattr(self._renderer, '_channel_last_received'):
-            return
-        
-        current_time = time.time()
-        channel_last_received = getattr(self._renderer, '_channel_last_received', {})
-        
-        for channel_name, activity_light in self._channel_activity_lights.items():
-            if channel_name in channel_last_received:
-                last_received = channel_last_received[channel_name]
-                time_since = current_time - last_received
-                if time_since < 2.0:  # Data received within last 2 seconds
-                    activity_light.setStyleSheet("background-color: green; border-radius: 6px;")
-                else:  # No data for more than 2 seconds
-                    activity_light.setStyleSheet("background-color: gray; border-radius: 6px;")
-            else:  # Never received data
-                activity_light.setStyleSheet("background-color: gray; border-radius: 6px;")
-
-    def _check_channel_activity(self):
-        """Check channel activity and show alerts if needed."""
-        if not hasattr(self._renderer, '_channel_last_received'):
-            return
-        
-        current_time = time.time()
-        channel_last_received = getattr(self._renderer, '_channel_last_received', {})
-        
-        # Update activity lights
-        self._update_activity_lights()
-        
-        # Check for no-data conditions and show alerts
-        for channel_name in self._channel_notify_enabled:
-            if not self._channel_notify_enabled[channel_name]:
-                continue  # Notifications not enabled for this channel
-            
-            if channel_name in channel_last_received:
-                last_received = channel_last_received[channel_name]
-                time_since = current_time - last_received
-                
-                if time_since > 10.0:  # No data for more than 10 seconds
-                    # Only alert if we haven't already alerted for this channel
-                    if channel_name not in self._alerted_channels:
-                        msg = QtWidgets.QMessageBox()
-                        msg.setIcon(QtWidgets.QMessageBox.Warning)
-                        msg.setWindowTitle("Channel Data Alert")
-                        msg.setText(f"Channel '{channel_name}' has not received data for {int(time_since)} seconds.")
-                        msg.setInformativeText("The data stream may have stopped or the headset may have disconnected.")
-                        msg.exec_()
-                        self._alerted_channels.add(channel_name)
-                else:
-                    # Data resumed, remove from alerted set
-                    self._alerted_channels.discard(channel_name)
