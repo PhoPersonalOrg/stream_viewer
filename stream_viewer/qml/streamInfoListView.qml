@@ -21,7 +21,7 @@ Rectangle {
                     anchors.margins: 2
                     clip: true
                     anchors.fill: parent
-                    columns: 2
+                    columns: 3
                     rows: 3
                     Text {
                         text: '<b>Name:</b> ' + name
@@ -30,6 +30,31 @@ Rectangle {
                     Text {
                         text: '<b>Type:</b> ' + type
                         Layout.row: 0; Layout.column: 1
+                    }
+                    Row {
+                        Layout.row: 0; Layout.column: 2
+                        spacing: 5
+                        Rectangle {
+                            id: activityLight
+                            width: 14
+                            height: 14
+                            radius: 7
+                            border.width: 1
+                            border.color: "#888"
+                            color: {
+                                if (activityState === 'active') return '#00ff00'
+                                else if (activityState === 'warning') return '#ffaa00'
+                                else if (activityState === 'critical') return '#ff0000'
+                                else return 'gray'
+                            }
+                        }
+                        CheckBox {
+                            id: notifyCheckbox
+                            checked: notifyEnabled
+                            onCheckedChanged: {
+                                OuterWidget.setNotifyEnabled(index, checked)
+                            }
+                        }
                     }
                     Text {
                         text: '<b>Host:</b> ' + hostname
