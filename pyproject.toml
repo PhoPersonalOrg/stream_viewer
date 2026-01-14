@@ -71,6 +71,9 @@ include = ["stream_viewer*"]
 exclude = ["icons*", "docs*", "dist*"]
 
 [tool.uv.sources]
+# Platform-specific path: Linux uses "../mne-python", Windows uses "../../mne-python"
+# Run 'python update_mne_path.py' to automatically set the correct path for your platform
+# This avoids git conflicts when working across different operating systems
 mne = { path = "../../mne-python", editable = true }
 phopymnehelper = { path = "../PhoPyMNEHelper", editable = true }
 

@@ -1,0 +1,6 @@
+# Platform-specific path configuration
+# The mne path in pyproject.toml differs by platform:
+# - Linux/Mac: ../mne-python
+# - Windows: ../../mne-python
+# Use the update_mne_path.py script to automatically set the correct path for your platform
+# This avoids git conflicts by allowing each developer to maintain their platform's path

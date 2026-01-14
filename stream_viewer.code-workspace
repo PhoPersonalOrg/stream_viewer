@@ -2,11 +2,17 @@
 	"folders": [
 		{
 			"path": "."
+		},
+		{
+			"path": "../../LSL_REPOS/App-XDFStreamer"
+		},
+		{
+			"path": "../python_xdf_streamer"
 		}
 	],
 	"settings": {
 		"windowColor.mainColor": "#ace22c",
-		"window.title": "c:\\Users\\pho\\repos\\EmotivEpoc\\ACTIVE_DEV\\stream_viewer\\stream_viewer.code-workspace",
+		"window.title": "stream_viewer/stream_viewer.code-workspace",
 		"workbench.colorCustomizations": {
 			"editor.lineHighlightBackground": "#1073cf2d",
 			"editor.lineHighlightBorder": "#9fced11f",

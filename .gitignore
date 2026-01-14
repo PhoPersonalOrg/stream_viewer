@@ -131,3 +131,6 @@ dmypy.json
 # PyCharm
 .idea/
 desktop.ini
+
+# Local platform-specific overrides (if using uv.local.toml)
+uv.local.toml
