@@ -440,6 +440,7 @@ class LSLViewer(QtWidgets.QMainWindow):
         dock.setAllowedAreas(QtCore.Qt.RightDockWidgetArea)
         dock.setObjectName(rend_key)
         dock.setAttribute(QtCore.Qt.WA_DeleteOnClose, on=True)
+        dock.setMinimumHeight(300)
 
         # New renderer
         renderer_kwargs['key'] = rend_key
@@ -475,12 +476,63 @@ class LSLViewer(QtWidgets.QMainWindow):
         settings = QtCore.QSettings(str(self._settings_path), QtCore.QSettings.IniFormat)
         settings.beginGroup("RendererDocksMain")
         settings.beginGroup(rend_key)
-        if settings.value("floating", 'false') == 'true':
+        saved_size = settings.value("size")
+        is_floating = settings.value("floating", 'false') == 'true'
+        
+        if is_floating:
             dock.setFloating(True)
-            dock.resize(settings.value("size"))
-            dock.move(settings.value("pos"))
+            if saved_size is not None:
+                dock.resize(saved_size)
+                dock.move(settings.value("pos"))
+        elif saved_size is None:
+            # New dock with no saved geometry: apply default size
+            # Use QTimer to defer resize until dock is properly laid out
+            default_size = self._get_default_dock_size(QtCore.Qt.RightDockWidgetArea)
+            QtCore.QTimer.singleShot(0, lambda: self.resizeDocks([dock], [default_size.width()], QtCore.Qt.Horizontal))
+        
         settings.endGroup()
         settings.endGroup()
+
+    def _get_default_dock_size(self, dock_area: QtCore.Qt.DockWidgetArea) -> QtCore.QSize:
+        """
+        Calculate a reasonable default size for a new dock widget based on the main window size
+        and existing docks in the same area.
+
+        Args:
+            dock_area: The dock widget area where the dock will be placed
+
+        Returns:
+            A QSize with reasonable default dimensions
+        """
+        main_size = self.size()
+        main_width = main_size.width()
+        main_height = main_size.height()
+
+        # Check for existing docks in the same area
+        status_dock = self.findChild(QtWidgets.QDockWidget, name="StatusPanel")
+        existing_docks = [
+            dw for dw in self.findChildren(QtWidgets.QDockWidget)
+            if dw is not status_dock and self.dockWidgetArea(dw) == dock_area and not dw.isFloating()
+        ]
+
+        if existing_docks:
+            # Use average width of existing docks in the same area
+            avg_width = sum(dw.size().width() for dw in existing_docks) // len(existing_docks)
+            # Use the height of the main window (docks typically span full height)
+            default_width = max(avg_width, 400)  # Ensure minimum 400px width
+            default_height = main_height
+        else:
+            # No existing docks: use a percentage of main window size
+            # For right dock area (horizontal docks), use 30-40% of width
+            if dock_area == QtCore.Qt.RightDockWidgetArea:
+                default_width = max(int(main_width * 0.35), 500)  # 35% of width, minimum 500px
+                default_height = main_height  # Full height
+            else:
+                # For other areas, use similar logic but adjust as needed
+                default_width = max(int(main_width * 0.35), 500)
+                default_height = main_height
+
+        return QtCore.QSize(default_width, default_height)
 
     def update(self):
         pass
