@@ -7,7 +7,7 @@ import argparse
 import logging
 from pathlib import Path
 from qtpy import QtWidgets, QtCore
-from qtpy.QtGui import QIcon
+from qtpy.QtGui import QIcon, QKeySequence
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 import stream_viewer
 from stream_viewer.data import LSLDataSource
@@ -15,7 +15,24 @@ from stream_viewer.data import LSLStreamInfoTableModel
 from stream_viewer.widgets import load_widget
 from stream_viewer.widgets import ConfigAndRenderWidget
 from stream_viewer.widgets import StreamStatusQMLWidget
+from stream_viewer.widgets.console_output import ConsoleOutputWidget
 from stream_viewer.renderers import load_renderer, list_renderers, get_kwargs_from_settings
+
+# Suppress console window on Windows
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        # Try to hide the console window
+        kernel32 = ctypes.windll.kernel32
+        # GetConsoleWindow returns a handle to the console window, or None if no console
+        console_window = kernel32.GetConsoleWindow()
+        if console_window:
+            # Hide the console window
+            user32 = ctypes.windll.user32
+            user32.ShowWindow(console_window, 0)  # SW_HIDE = 0
+    except Exception:
+        # If ctypes fails, continue without hiding console
+        pass
 
 
 logger = logging.getLogger(__name__)
@@ -86,6 +103,9 @@ class LSLViewer(QtWidgets.QMainWindow):
         self.stream_status_widget.stream_added.connect(self.on_stream_added)
         self.setup_status_panel()
 
+        # Setup console output panel
+        self.setup_console_panel()
+
         # Setup menubar
         self.setup_menus()
 
@@ -117,6 +137,14 @@ class LSLViewer(QtWidgets.QMainWindow):
         view_menu.addAction(refresh_act)
         view_menu.addAction(prefs_act)
         # view_menu.addAction(stream_settings_act)
+        
+        # Console output toggle action
+        self._console_act = QtWidgets.QAction("Show &Console Output", self)
+        self._console_act.setCheckable(True)
+        self._console_act.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self._console_act.triggered.connect(self._toggle_console_output)
+        view_menu.addSeparator()
+        view_menu.addAction(self._console_act)
 
     def setup_status_panel(self):
         dock = QtWidgets.QDockWidget()
@@ -129,6 +157,21 @@ class LSLViewer(QtWidgets.QMainWindow):
         dock.setFloating(False)
         # Prevent the dock from floating by monitoring topLevelChanged signal
         dock.topLevelChanged.connect(lambda floating: dock.setFloating(False) if floating else None)
+
+    def setup_console_panel(self):
+        """Set up the console output dock widget."""
+        self._console_widget = ConsoleOutputWidget(self)
+        dock = QtWidgets.QDockWidget("Console Output", self)
+        dock.setObjectName("ConsoleOutput")
+        dock.setAllowedAreas(QtCore.Qt.BottomDockWidgetArea | QtCore.Qt.TopDockWidgetArea)
+        dock.setMinimumHeight(150)
+        dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetClosable | QtWidgets.QDockWidget.DockWidgetFloatable)
+        dock.setWidget(self._console_widget)
+        self._console_dock = dock
+        # Initially hidden, can be shown via menu action
+        dock.setVisible(False)
+        # Sync menu action when dock visibility changes (e.g., when closed via X button)
+        dock.visibilityChanged.connect(self._on_console_dock_visibility_changed)
 
     def restoreOnStartup(self):
         # The start counterpart to closeEvent
@@ -185,6 +228,54 @@ class LSLViewer(QtWidgets.QMainWindow):
                     status_dock.resize(size)
         except Exception as exc:
             logger.warning("Failed to restore StreamStatus dock: %s", exc)
+        finally:
+            settings.endGroup()
+
+        # ---- ConsoleOutput panel geometry ----
+        try:
+            settings.beginGroup("ConsoleOutput")
+            console_dock = self.findChild(QtWidgets.QDockWidget, name="ConsoleOutput")
+            if console_dock is not None:
+                # Restore visibility
+                is_visible = settings.value("visible", 'false') == 'true'
+                if is_visible:
+                    # Restore dock area
+                    dock_area = settings.value("dockWidgetArea")
+                    if dock_area is not None:
+                        dock_area = int(dock_area)
+                    else:
+                        dock_area = QtCore.Qt.BottomDockWidgetArea
+                    
+                    # Add dock if not already added
+                    if self.dockWidgetArea(console_dock) == QtCore.Qt.NoDockWidgetArea:
+                        self.addDockWidget(dock_area, console_dock)
+                    
+                    # Restore floating state and geometry
+                    is_floating = settings.value("floating", 'false') == 'true'
+                    if is_floating:
+                        console_dock.setFloating(True)
+                        saved_size = settings.value("size")
+                        saved_pos = settings.value("pos")
+                        if saved_size is not None:
+                            console_dock.resize(saved_size)
+                        if saved_pos is not None:
+                            console_dock.move(saved_pos)
+                    else:
+                        console_dock.setFloating(False)
+                        saved_size = settings.value("size")
+                        if saved_size is not None:
+                            console_dock.resize(saved_size)
+                    
+                    console_dock.setVisible(is_visible)
+                    # Sync menu action state
+                    if hasattr(self, '_console_act'):
+                        self._console_act.setChecked(is_visible)
+                else:
+                    console_dock.setVisible(False)
+                    if hasattr(self, '_console_act'):
+                        self._console_act.setChecked(False)
+        except Exception as exc:
+            logger.warning("Failed to restore ConsoleOutput dock: %s", exc)
         finally:
             settings.endGroup()
 
@@ -312,6 +403,9 @@ class LSLViewer(QtWidgets.QMainWindow):
                     pass
 
     def closeEvent(self, event):
+        # Restore stdout/stderr before closing
+        if hasattr(self, '_console_widget'):
+            self._console_widget.restore_streams()
         self.saveSettings()
         QtWidgets.QMainWindow.closeEvent(self, event)  # super?
 
@@ -319,7 +413,7 @@ class LSLViewer(QtWidgets.QMainWindow):
         settings = QtCore.QSettings(str(self._settings_path), QtCore.QSettings.IniFormat)
 
         # Prune stale renderer groups at root (renderer configs keyed by rend_key)
-        reserved_groups = set(["MainWindow", "PluginFolders", "StreamStatus", "RendererDocksMain"])
+        reserved_groups = set(["MainWindow", "PluginFolders", "StreamStatus", "ConsoleOutput", "RendererDocksMain"])
         for grp in settings.childGroups():
             if grp not in reserved_groups and grp not in set(self._open_renderers):
                 settings.remove(grp)
@@ -354,6 +448,18 @@ class LSLViewer(QtWidgets.QMainWindow):
             settings.setValue("floating", False)
             settings.endGroup()
 
+        # Save ConsoleOutput panel geometry.
+        console_dock = self.findChild(QtWidgets.QDockWidget, name="ConsoleOutput")
+        if console_dock:
+            settings.beginGroup("ConsoleOutput")
+            settings.setValue("visible", console_dock.isVisible())
+            if console_dock.isVisible():
+                settings.setValue("dockWidgetArea", self.dockWidgetArea(console_dock))
+                settings.setValue("size", console_dock.size())
+                settings.setValue("pos", console_dock.pos())
+                settings.setValue("floating", console_dock.isFloating())
+            settings.endGroup()
+
         # Save all of the docks' geometry. They are keyed by the dock object name,
         # which is probably equivalent to ";".join([renderer_name, first_src.identifier])
         # Clear old geometry first to avoid resurrecting closed docks
@@ -382,6 +488,26 @@ class LSLViewer(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def launch_modal_prefs(self):
         print("TODO! launch_modal_prefs")
+
+    @QtCore.Slot(bool)
+    def _toggle_console_output(self, checked):
+        """Toggle console output dock visibility."""
+        if checked:
+            if not self._console_dock.isVisible():
+                # Add dock if not already added
+                if self.dockWidgetArea(self._console_dock) == QtCore.Qt.NoDockWidgetArea:
+                    self.addDockWidget(QtCore.Qt.BottomDockWidgetArea, self._console_dock)
+                self._console_dock.setVisible(True)
+                self._console_act.setChecked(True)
+        else:
+            self._console_dock.setVisible(False)
+            self._console_act.setChecked(False)
+
+    @QtCore.Slot(bool)
+    def _on_console_dock_visibility_changed(self, visible):
+        """Handle console dock visibility changes (e.g., when closed via X button)."""
+        if hasattr(self, '_console_act'):
+            self._console_act.setChecked(visible)
 
     @QtCore.Slot(dict)
     def on_stream_added(self, strm):
