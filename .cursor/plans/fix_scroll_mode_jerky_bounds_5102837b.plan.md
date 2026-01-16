@@ -1,31 +1,3 @@
----
-name: Fix Scroll Mode Jerky Bounds
-overview: Fix the jerky bounds issue in Scroll mode by calculating the x-axis range once before processing sources, and using the intended new range when extracting display columns instead of the current (old) range.
-todos:
-  - id: precalc_xrange
-    content: Pre-calculate x-axis range once before source loop in update_visualization()
-    status: completed
-  - id: update_xrange_early
-    content: Update x-axis range early (before preparing displays) to ensure consistency
-    status: completed
-    dependencies:
-      - precalc_xrange
-  - id: modify_prepare_display
-    content: Modify _prepare_display_heatmap() to accept optional target_xrange parameter
-    status: completed
-  - id: use_target_range
-    content: Update _prepare_display_heatmap() to use target_xrange when provided instead of reading current range
-    status: completed
-    dependencies:
-      - modify_prepare_display
-  - id: pass_target_range
-    content: Update update_visualization() to pass target_xrange to _prepare_display_heatmap()
-    status: completed
-    dependencies:
-      - precalc_xrange
-      - use_target_range
----
-
 # Fix Scroll Mode Jerky Bounds
 
 ## Problem Analysis

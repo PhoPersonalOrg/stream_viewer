@@ -1,24 +1,3 @@
----
-name: Channel Activity Monitoring
-overview: Add activity indicators and no-data notifications to the channels list. Each channel will show an activity light that indicates when data is being received, and users can enable notifications to be alerted when a channel stops receiving data for more than 10 seconds.
-todos:
-  - id: track-channel-timestamps
-    content: Add _channel_last_received tracking dictionary to RendererBufferData and update it in fetch_data() when channels receive new data
-    status: completed
-  - id: add-activity-lights
-    content: Modify reset_widgets() in interface.py to add activity light indicators (colored QLabel widgets) to each channel item using setItemWidget()
-    status: completed
-  - id: add-notify-toggles
-    content: Add 'notify no data' checkboxes to each channel item and store preferences in _channel_notify_enabled dictionary
-    status: completed
-  - id: add-monitor-timer
-    content: Create monitor timer in IControlPanel that runs every 1-2 seconds to check channel activity and update activity lights
-    status: completed
-  - id: implement-alerts
-    content: Implement alert logic that shows QMessageBox when enabled channels have no data for >10 seconds, with spam prevention
-    status: completed
----
-
 # Channel Activity Monitoring Feature
 
 ## Overview
