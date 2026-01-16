@@ -122,8 +122,13 @@ class LSLViewer(QtWidgets.QMainWindow):
         dock = QtWidgets.QDockWidget()
         dock.setObjectName("StatusPanel")
         dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea)
+        dock.setMinimumWidth(300)
+        dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetClosable)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, dock)
         dock.setWidget(self.stream_status_widget)
+        dock.setFloating(False)
+        # Prevent the dock from floating by monitoring topLevelChanged signal
+        dock.topLevelChanged.connect(lambda floating: dock.setFloating(False) if floating else None)
 
     def restoreOnStartup(self):
         # The start counterpart to closeEvent
@@ -167,16 +172,17 @@ class LSLViewer(QtWidgets.QMainWindow):
         # ---- StreamStatus panel geometry ----
         try:
             settings.beginGroup("StreamStatus")
-            if settings.value("floating", 'false') == 'true':
-                status_dock = self.findChild(QtWidgets.QDockWidget, name="StatusPanel")
-                if status_dock is not None:
-                    status_dock.setFloating(True)
-                    size = settings.value("size")
-                    pos = settings.value("pos")
-                    if size is not None:
-                        status_dock.resize(size)
-                    if pos is not None:
-                        status_dock.move(pos)
+            status_dock = self.findChild(QtWidgets.QDockWidget, name="StatusPanel")
+            if status_dock is not None:
+                # Always ensure the dock is docked (not floating)
+                status_dock.setFloating(False)
+                # Ensure it's in the left dock area
+                if self.dockWidgetArea(status_dock) != QtCore.Qt.LeftDockWidgetArea:
+                    self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, status_dock)
+                # Restore size if available (only when docked)
+                size = settings.value("size")
+                if size is not None:
+                    status_dock.resize(size)
         except Exception as exc:
             logger.warning("Failed to restore StreamStatus dock: %s", exc)
         finally:
@@ -340,11 +346,12 @@ class LSLViewer(QtWidgets.QMainWindow):
         status_dock = self.findChild(QtWidgets.QDockWidget, name="StatusPanel")
         if status_dock:
             settings.beginGroup("StreamStatus")
-            settings.setValue("dockWidgetArea", self.dockWidgetArea(status_dock))
+            # Always save as left dock area and non-floating
+            settings.setValue("dockWidgetArea", QtCore.Qt.LeftDockWidgetArea)
             # # https://doc.qt.io/qt-5/qt.html#DockWidgetArea-enum
             settings.setValue("size", status_dock.size())
             settings.setValue("pos", status_dock.pos())
-            settings.setValue("floating", status_dock.isFloating())
+            settings.setValue("floating", False)
             settings.endGroup()
 
         # Save all of the docks' geometry. They are keyed by the dock object name,
