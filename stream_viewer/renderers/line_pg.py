@@ -28,7 +28,7 @@ class LinePG(RendererDataTimeSeries, PGRenderer):
                  # New
                  offset_channels: bool = True,
                  reset_colormap: bool = False,
-                 line_width: float = 2.0,
+                 line_width: float = 0.5,
                  antialias: bool = True,
                  ylabel_as_title: bool = False,
                  ylabel_width: int = None,

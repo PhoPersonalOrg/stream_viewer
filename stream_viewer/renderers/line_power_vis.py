@@ -76,7 +76,7 @@ class LinePowerVis(RendererDataTimeSeries, PGRenderer):
         baseline_start: float = None,
         baseline_end: float = 0.0,
         show_confidence: bool = False,
-        line_width: float = 2.5,
+        line_width: float = 0.5,
         antialias: bool = True,
         **kwargs
     ):
