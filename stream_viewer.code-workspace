@@ -8,6 +8,18 @@
 		},
 		{
 			"path": "../python_xdf_streamer"
+		},
+		{
+			"path": "../mne-python"
+		},
+		{
+			"path": "../PhoPyLSLhelper"
+		},
+		{
+			"path": "../PhoPyMNEHelper"
+		},
+		{
+			"path": "../phopyqthelper"
 		}
 	],
 	"settings": {

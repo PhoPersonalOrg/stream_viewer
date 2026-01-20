@@ -15,7 +15,7 @@ from stream_viewer.data import LSLStreamInfoTableModel
 from stream_viewer.widgets import load_widget
 from stream_viewer.widgets import ConfigAndRenderWidget
 from stream_viewer.widgets import StreamStatusQMLWidget
-from stream_viewer.widgets.console_output import ConsoleOutputWidget
+from phopyqthelper.widgets import ConsoleOutputWidget
 from stream_viewer.renderers import load_renderer, list_renderers, get_kwargs_from_settings
 
 # Suppress console window on Windows
