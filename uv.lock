@@ -2169,10 +2169,13 @@ requires-dist = [
 [[package]]
 name = "phopyqthelper"
 version = "0.1.0"
-source = { git = "https://github.com/CommanderPho/phopyqthelper.git#3f98c495d067666f370ed7f67cc2a398c4690d21" }
+source = { editable = "../phopyqthelper" }
 dependencies = [
     { name = "qtpy" },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "qtpy", specifier = ">=2.0.0" }]
 
 [[package]]
 name = "pillow"
@@ -3020,7 +3023,7 @@ requires-dist = [
     { name = "packaging" },
     { name = "pandas" },
     { name = "phopymnehelper", editable = "../PhoPyMNEHelper" },
-    { name = "phopyqthelper", git = "https://github.com/CommanderPho/phopyqthelper.git" },
+    { name = "phopyqthelper", editable = "../phopyqthelper" },
     { name = "pyaudio", specifier = ">=0.2.14" },
     { name = "pylsl", specifier = ">=1.16.2" },
     { name = "pyopengl" },
