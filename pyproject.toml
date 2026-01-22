@@ -50,7 +50,7 @@ dependencies = [
     "pyvista>=0.46.4",
     "phopymnehelper",
     "phopyqthelper",
-    "dive",
+    # "dive",
 ]
 
 [project.optional-dependencies]
@@ -80,7 +80,7 @@ exclude = ["icons*", "docs*", "dist*"]
 mne = { path = "../mne-python", editable = true }
 phopymnehelper = { path = "../PhoPyMNEHelper", editable = true }
 phopyqthelper = { path = "../phopyqthelper", editable = true }
-dive = { path = "../DIVE", editable = true }
+# dive = { path = "../DIVE", editable = true }
 
 [dependency-groups]
 dev = [
