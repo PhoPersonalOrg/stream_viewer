@@ -79,7 +79,7 @@ exclude = ["icons*", "docs*", "dist*"]
 # This avoids git conflicts when working across different directory layouts
 mne = { path = "../../mne-python", editable = true }
 phopymnehelper = { path = "../PhoPyMNEHelper", editable = true }
-phopyqthelper = { path = "../phopyqthelper", editable = true }
+phopyqthelper = { git = "https://github.com/CommanderPho/phopyqthelper.git" }
 # dive = { path = "../DIVE", editable = true }
 
 [dependency-groups]
