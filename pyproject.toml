@@ -90,4 +90,5 @@ dev = [
     "mkdocstrings-python>=1.11.1",
     "pygments>=2.19.2",
     "pymdown-extensions>=10.15",
+    "pyinstaller>=6.0.0",
 ]
