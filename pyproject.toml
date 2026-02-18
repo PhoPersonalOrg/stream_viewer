@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stream-viewer"
-version = "0.30.2"
+version = "0.30.4"
 description = 'Tools to visualize data streamed with Lab Streaming Layer'
 keywords = ["lsl", "lab streaming layer", "streaming", "visualization", "eeg", "neural data"]
 readme = "docs/README.md"
@@ -50,6 +50,7 @@ dependencies = [
     "pyvista>=0.46.4",
     "phopymnehelper",
     "phopyqthelper",
+    # "rerun-sdk==0.29.2; sys_platform != 'darwin'"
     # "dive",
 ]
 
@@ -57,6 +58,8 @@ dependencies = [
 gpu = [
     "torch>=2.0.0",
 ]
+# rerun: not declared here so uv lock never requires it (rerun-sdk needs numpy>=2, conflicts with dev mne).
+# Install manually when desired: uv add rerun-sdk. Use stream_viewer.utils.RERUN_AVAILABLE / rr to guard code.
 
 [project.scripts]
 lsl_viewer = "stream_viewer.applications.main:main"
@@ -77,7 +80,7 @@ exclude = ["icons*", "docs*", "dist*"]
 # The script checks for "../mne-python" and "../../mne-python" and uses whichever exists
 # Run 'python update_mne_path.py' to automatically set the correct path based on your directory structure
 # This avoids git conflicts when working across different directory layouts
-mne = { path = "../../mne-python", editable = true }
+mne = { path = "../mne-python", editable = true }
 phopymnehelper = { path = "../PhoPyMNEHelper", editable = true }
 phopyqthelper = { path = "../phopyqthelper", editable = true }
 # dive = { path = "../DIVE", editable = true }
@@ -91,4 +94,6 @@ dev = [
     "pygments>=2.19.2",
     "pymdown-extensions>=10.15",
     "pyinstaller>=6.0.0",
+    "vulture>=2.14",
+    "pyflakes>=3.4.0",
 ]

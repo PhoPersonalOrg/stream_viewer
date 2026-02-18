@@ -142,3 +142,7 @@ scripts/lsl_status.ps1
 scripts/lsl_viewer.bat
 scripts/lsl_viewer.ps1
 templating/uv_deps_switcher/backups
+.specstory
+.cursor/rules/derived-cursor-rules.mdc
+**/.cursorindexingignore*
+**/.cursorignore
