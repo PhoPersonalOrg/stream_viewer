@@ -146,3 +146,6 @@ templating/uv_deps_switcher/backups
 .cursor/rules/derived-cursor-rules.mdc
 **/.cursorindexingignore*
 **/.cursorignore
+# pixi environments
+.pixi/*
+!.pixi/config.toml

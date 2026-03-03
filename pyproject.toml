@@ -97,3 +97,17 @@ dev = [
     "vulture>=2.14",
     "pyflakes>=3.4.0",
 ]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["win-64"]
+
+[tool.pixi.pypi-dependencies]
+stream-viewer = { path = ".", editable = true }
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+dev = { features = ["dev"], solve-group = "default" }
+gpu = { features = ["gpu"], solve-group = "default" }
+
+[tool.pixi.tasks]

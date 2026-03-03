@@ -4,3 +4,5 @@
 # - Windows: ../../mne-python
 # Use the update_mne_path.py script to automatically set the correct path for your platform
 # This avoids git conflicts by allowing each developer to maintain their platform's path
+# SCM syntax highlighting & preventing 3-way merges
+pixi.lock merge=binary linguist-language=YAML linguist-generated=true -diff
