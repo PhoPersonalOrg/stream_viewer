@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stream-viewer"
-version = "0.30.4"
+version = "0.30.5"
 description = 'Tools to visualize data streamed with Lab Streaming Layer'
 keywords = ["lsl", "lab streaming layer", "streaming", "visualization", "eeg", "neural data"]
 readme = "docs/README.md"
@@ -40,7 +40,7 @@ dependencies = [
     "python-levenshtein>=0.25.1",
     "pyaudio>=0.2.14",
     "slimgui>=0.6.0",
-    "ipykernel>=7.1.0",
+    "ipykernel>=6.29",
     "ipywidgets>=8.1.8",
     "dearpygui>=2.1.1",
     "mkl-static>=2025.3.0",
@@ -89,7 +89,7 @@ phopyqthelper = { path = "../phopyqthelper", editable = true }
 dev = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.6.23",
-    "mkdocstrings>=0.26.1",
+    "mkdocstrings>=0.24",
     "mkdocstrings-python>=1.11.1",
     "pygments>=2.19.2",
     "pymdown-extensions>=10.15",

@@ -2093,7 +2093,7 @@ packages:
   - tbb-devel==2022.*
 - pypi: ../mne-python
   name: mne
-  version: 1.11.0.dev149+g8406469c9.d20260304
+  version: 1.11.0.dev149+g8406469c9.d20260312
   sha256: 8ffd911a982d7ec9439d1c72ad3646878a0bac84877645f76076beb998260680
   requires_dist:
   - decorator
@@ -3682,8 +3682,8 @@ packages:
   - cython ; extra == 'tests'
 - pypi: ./
   name: stream-viewer
-  version: 0.30.4
-  sha256: 61d72ea29d93baf2e00ad50ff8df8db0ccc4afb2d8f2724502dba4479fa980ae
+  version: 0.30.5
+  sha256: 6abaee4b174564fac0c85cb8e6e19d0ad51338957d836bf691a776d4f35a9626
   requires_dist:
   - numpy
   - matplotlib>=3.7.5
@@ -3707,7 +3707,7 @@ packages:
   - python-levenshtein>=0.25.1
   - pyaudio>=0.2.14
   - slimgui>=0.6.0
-  - ipykernel>=7.1.0
+  - ipykernel>=6.29
   - ipywidgets>=8.1.8
   - dearpygui>=2.1.1
   - mkl-static>=2025.3.0
