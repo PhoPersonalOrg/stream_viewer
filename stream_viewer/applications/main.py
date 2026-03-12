@@ -5,6 +5,7 @@ import sys
 import functools
 import argparse
 import logging
+import time
 from pathlib import Path
 from qtpy import QtWidgets, QtCore
 from qtpy.QtGui import QIcon, QKeySequence
@@ -17,6 +18,12 @@ from stream_viewer.widgets import ConfigAndRenderWidget
 from stream_viewer.widgets import StreamStatusQMLWidget
 from phopyqthelper.widgets import ConsoleOutputWidget
 from stream_viewer.renderers import load_renderer, list_renderers, get_kwargs_from_settings
+from stream_viewer.utils.optional_imports import PYPHOTIMELINE_AVAILABLE
+
+if PYPHOTIMELINE_AVAILABLE:
+    from pypho_timeline.widgets.simple_timeline_widget import SimpleTimelineWidget
+    from pypho_timeline.core.synchronized_plot_mode import SynchronizedPlotMode
+    from stream_viewer.timeline import StreamViewerLSLTrackDatasource
 
 # Suppress console window on Windows
 if sys.platform == 'win32':
@@ -524,9 +531,10 @@ class LSLViewer(QtWidgets.QMainWindow):
     def on_stream_activated(self, sources, renderer_name=None, renderer_kwargs={}, forced_rend_key=None):
         # Normalize renderer_name: if not provided then use a popup combo box.
         if renderer_name is None:
-            item, ok = QtWidgets.QInputDialog.getItem(self, "Select Renderer", "Found Renderers",
-                                                      list_renderers(extra_search_dirs=self._plugin_dirs['renderers'])
-                                                      + self._open_renderers)
+            renderer_list = list_renderers(extra_search_dirs=self._plugin_dirs['renderers']) + self._open_renderers
+            if PYPHOTIMELINE_AVAILABLE:
+                renderer_list = ["Timeline"] + renderer_list
+            item, ok = QtWidgets.QInputDialog.getItem(self, "Select Renderer", "Found Renderers", renderer_list)
             renderer_name = item if ok else None
 
         if renderer_name is None:
@@ -546,6 +554,10 @@ class LSLViewer(QtWidgets.QMainWindow):
             if not isinstance(src, LSLDataSource):
                 raise ValueError("Only LSLDataSource type currently supported.")
             sources[src_ix] = src
+
+        if renderer_name == "Timeline" and PYPHOTIMELINE_AVAILABLE:
+            self._on_open_timeline(sources)
+            return
 
         # If the renderer is already open then we just use that one and add the source(s).
         if renderer_name in self._open_renderers:
@@ -625,6 +637,54 @@ class LSLViewer(QtWidgets.QMainWindow):
         
         settings.endGroup()
         settings.endGroup()
+
+    def _on_open_timeline(self, sources):
+        """Open a timeline dock with one track per LSL source using StreamViewerLSLTrackDatasource."""
+        if not PYPHOTIMELINE_AVAILABLE or not sources:
+            return
+        buffer_seconds = 300.0
+        window_seconds = 10.0
+        now = time.time()
+        timeline = SimpleTimelineWidget(total_start_time=now - buffer_seconds, total_end_time=now + window_seconds, window_duration=window_seconds, window_start_time=now - window_seconds, add_example_tracks=False, reference_datetime=None, parent=self)
+        adapters = []
+        for idx, lsl_src in enumerate(sources):
+            try:
+                id_dict = json.loads(lsl_src.identifier)
+            except Exception:
+                id_dict = {}
+            stream_type = id_dict.get("type") or ""
+            stream_name = id_dict.get("name") or getattr(lsl_src, "custom_datasource_name", None) or f"Stream_{idx}"
+            track_name = f"Timeline_{stream_name}_{idx}"
+            adapter = StreamViewerLSLTrackDatasource(lsl_src, buffer_seconds=buffer_seconds, stream_type=stream_type or None, channel_names=None, custom_datasource_name=stream_name, parent=self)
+            adapters.append(adapter)
+            widget, _rg, plot_item, _dock = timeline.add_new_embedded_pyqtgraph_render_plot_widget(name=track_name, dockSize=(1200, 200), dockAddLocationOpts=["bottom"], sync_mode=SynchronizedPlotMode.TO_GLOBAL_DATA)
+            plot_item.setXRange(now - window_seconds, now, padding=0)
+            plot_item.setYRange(0, 1, padding=0)
+            plot_item.setLabel("left", stream_name)
+            plot_item.hideAxis("left")
+            plot_item.setLabel("bottom", "Time (LSL clock)")
+            timeline.add_track(adapter, name=track_name, plot_item=plot_item)
+            adapter.start_polling()
+        rend_key = "Timeline|" + (stream_name or "live") + "|" + str(len([k for k in self._open_renderers if k.startswith("Timeline|")]))
+        dock = QtWidgets.QDockWidget(rend_key, self)
+        dock.setAllowedAreas(QtCore.Qt.RightDockWidgetArea)
+        dock.setObjectName(rend_key)
+        dock.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        dock.setMinimumHeight(300)
+        dock.setWidget(timeline)
+        self._open_renderers.append(rend_key)
+
+        def _on_timeline_dock_destroyed():
+            for a in adapters:
+                try:
+                    a.stop_polling()
+                except Exception:
+                    pass
+
+        dock.destroyed.connect(_on_timeline_dock_destroyed)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+        default_size = self._get_default_dock_size(QtCore.Qt.RightDockWidgetArea)
+        QtCore.QTimer.singleShot(0, lambda: self.resizeDocks([dock], [default_size.width()], QtCore.Qt.Horizontal))
 
     def _get_default_dock_size(self, dock_area: QtCore.Qt.DockWidgetArea) -> QtCore.QSize:
         """

@@ -10,3 +10,10 @@ try:
 except ImportError:
     rr = None
     RERUN_AVAILABLE = False
+
+try:
+    import pypho_timeline
+    PYPHOTIMELINE_AVAILABLE = True
+except ImportError:
+    pypho_timeline = None
+    PYPHOTIMELINE_AVAILABLE = False

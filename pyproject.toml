@@ -58,6 +58,9 @@ dependencies = [
 gpu = [
     "torch>=2.0.0",
 ]
+timeline = [
+    "py-pho-timeline",
+]
 # rerun: not declared here so uv lock never requires it (rerun-sdk needs numpy>=2, conflicts with dev mne).
 # Install manually when desired: uv add rerun-sdk. Use stream_viewer.utils.RERUN_AVAILABLE / rr to guard code.
 
@@ -83,14 +86,15 @@ exclude = ["icons*", "docs*", "dist*"]
 mne = { path = "../mne-python", editable = true }
 phopymnehelper = { path = "../PhoPyMNEHelper", editable = true }
 phopyqthelper = { path = "../phopyqthelper", editable = true }
+py-pho-timeline = { path = "../pyPhoTimeline", editable = true }
 # dive = { path = "../DIVE", editable = true }
 
 [dependency-groups]
 dev = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.6.23",
-    "mkdocstrings>=0.24",
-    "mkdocstrings-python>=1.11.1",
+    "mkdocstrings>=0.24,<0.25",
+    "mkdocstrings-python>=1.10",
     "pygments>=2.19.2",
     "pymdown-extensions>=10.15",
     "pyinstaller>=6.0.0",

@@ -4,9 +4,6 @@
 			"path": "."
 		},
 		{
-			"path": "../../LSL_REPOS/App-XDFStreamer"
-		},
-		{
 			"path": "../python_xdf_streamer"
 		},
 		{
@@ -14,9 +11,6 @@
 		},
 		{
 			"path": "../PhoPyMNEHelper"
-		},
-		{
-			"path": "../phopyqthelper"
 		},
 		{
 			"path": "../pyPhoTimeline"
