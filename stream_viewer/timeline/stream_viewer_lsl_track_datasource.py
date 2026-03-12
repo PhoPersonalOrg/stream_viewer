@@ -139,7 +139,8 @@ class StreamViewerLSLTrackDatasource(IntervalProvidingTrackDatasource):
     new_data_available = QtCore.Signal()
 
     def __init__(self, lsl_data_source: LSLDataSource, buffer_seconds: float = 300.0, stream_type: Optional[str] = None, channel_names: Optional[List[str]] = None, custom_datasource_name: Optional[str] = None, poll_interval_ms: int = 100, parent: Optional[QtCore.QObject] = None) -> None:
-        stub = _make_stub_intervals_df(time.time())
+        now = time.time()
+        stub = _make_stub_intervals_df(now - buffer_seconds, now)
         super().__init__(intervals_df=stub, detailed_df=None, custom_datasource_name=custom_datasource_name or "LiveLSL", parent=parent)
         self._buffer_seconds = buffer_seconds
         self._stream_type = (stream_type or "").strip() or None

@@ -297,6 +297,8 @@ class LSLViewer(QtWidgets.QMainWindow):
             settings.endGroup()
 
         for dock_name in dock_groups:
+            if dock_name.startswith("Timeline|"):
+                continue
             try:
                 settings.beginGroup(dock_name)
 
@@ -485,6 +487,8 @@ class LSLViewer(QtWidgets.QMainWindow):
         # Independently save each renderer's configuration (color, scale, etc.).
         # These are keyed the same as the docks.
         for rend_key in self._open_renderers:
+            if rend_key.startswith("Timeline|"):
+                continue
             dw = self.findChild(QtWidgets.QDockWidget, rend_key)
             stream_widget = dw.widget()  # instance of ConfigAndRenderWidget
             renderer = stream_widget.renderer
