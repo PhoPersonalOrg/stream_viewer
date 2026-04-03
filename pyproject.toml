@@ -29,7 +29,7 @@ dependencies = [
     "pyqtgraph",
     "qtpy",
     "scipy",
-    "setuptools>=75.3.2",
+    "setuptools>=75.3.2,<82",
     "visbrain",
     "vispy",
     "mne>=1.6.1",
@@ -113,3 +113,6 @@ dev = { features = ["dev"], solve-group = "default" }
 gpu = { features = ["gpu"], solve-group = "default" }
 
 [tool.pixi.tasks]
+
+[tool.pixi.dependencies]
+pyinstaller = ">=6.19.0,<7"

@@ -26,14 +26,28 @@ def get_data_path(*path_parts, target_dir):
         raise FileNotFoundError(f"Data file not found: {abs_path}")
     return (str(abs_path), target_dir)
 
+
+def get_data_path_optional(*path_parts, target_dir):
+    """Like get_data_path but returns None when the file is missing."""
+    abs_path = project_root.joinpath(*path_parts)
+    if not abs_path.exists():
+        print(f"WARNING: optional data file not found, skipping: {abs_path}")
+        return None
+    return (str(abs_path), target_dir)
+
 # Collect all data files
 datas = [
     # QML files
-    get_data_path('stream_viewer', 'qml', 'streamInfoListView.qml', target_dir='stream_viewer/qml'),
-    # Icons
-    get_data_path('icons', 'stream_viewer icon_no_bg2.ico', target_dir='icons'),
-    get_data_path('icons', 'stream_viewer icon_no_bg2.png', target_dir='icons'),
+    get_data_path('stream_viewer', 'stream_viewer', 'qml', 'streamInfoListView.qml', target_dir='stream_viewer/qml'),
 ]
+
+# Icons (optional -- bundled when present, silently skipped otherwise)
+for _entry in [
+    get_data_path_optional('icons', 'stream_viewer icon_no_bg2.ico', target_dir='icons'),
+    get_data_path_optional('icons', 'stream_viewer icon_no_bg2.png', target_dir='icons'),
+]:
+    if _entry is not None:
+        datas.append(_entry)
 
 # Hidden imports - modules that PyInstaller might not automatically detect
 hiddenimports = [
@@ -125,5 +139,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(project_root / 'icons' / 'stream_viewer icon_no_bg2.ico') if sys.platform == 'win32' else None,
+    icon=str(project_root / 'icons' / 'stream_viewer icon_no_bg2.ico') if (sys.platform == 'win32' and (project_root / 'icons' / 'stream_viewer icon_no_bg2.ico').exists()) else None,
 )

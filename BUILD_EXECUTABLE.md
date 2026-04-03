@@ -62,6 +62,10 @@ The executable may be large (100+ MB) due to:
 
 This is normal for applications with many dependencies.
 
+### Optional Icons
+
+Application icons (`icons/stream_viewer icon_no_bg2.ico` and `icons/stream_viewer icon_no_bg2.png`) are optional. If they exist at the project root they will be bundled into the executable and used as the window icon; otherwise the build succeeds and the app runs without a custom icon.
+
 ### Console Window on Windows
 
 The spec file is configured with `console=False` to hide the console window. If you need to see debug output, change it to `console=True` in `lsl_viewer.spec`.
