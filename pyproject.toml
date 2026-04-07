@@ -29,7 +29,6 @@ dependencies = [
     "pyqtgraph",
     "qtpy",
     "scipy",
-    "setuptools>=75.3.2,<82",
     "visbrain",
     "vispy",
     "mne>=1.6.1",
@@ -50,15 +49,15 @@ dependencies = [
     "phopyqthelper",
     # "rerun-sdk==0.29.2; sys_platform != 'darwin'"
     # "dive",
+    "setuptools>=81.0.0",
+    "wheel>=0.46.3",
 ]
 
 [project.optional-dependencies]
 gpu = [
     "torch>=2.0.0",
 ]
-timeline = [
-    "py-pho-timeline",
-]
+
 # rerun: not declared here so uv lock never requires it (rerun-sdk needs numpy>=2, conflicts with dev mne).
 # Install manually when desired: uv add rerun-sdk. Use stream_viewer.utils.RERUN_AVAILABLE / rr to guard code.
 
