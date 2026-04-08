@@ -51,12 +51,14 @@ class LSLInfoItemModel:
     ActivityStateRole = QtCore.Qt.UserRole + 10
     NotifyEnabledRole = QtCore.Qt.UserRole + 11
     StreamLastReceivedRole = QtCore.Qt.UserRole + 12
+    ActivityFlashNonceRole = QtCore.Qt.UserRole + 13
 
     def __init__(self, refresh_interval=None):
         super().__init__()
         self._data = pd.DataFrame(columns=self.col_names)
         self._resolver = pylsl.ContinuousResolver()
         self._stream_last_received = {}  # Track last received timestamp per stream: {(name, type, hostname, uid): timestamp}
+        self._stream_flash_nonce = {}  # Increments on each handleRateUpdated for QML activity LED flash
         self._stream_notify_enabled = {}  # Track notify preferences per stream: {(name, type, hostname, uid): bool}
         self.refresh()
         if refresh_interval is not None:
@@ -100,6 +102,8 @@ class LSLInfoItemModel:
                 stream_key = (lost_row['name'], lost_row['type'], lost_row['hostname'], lost_row['uid'])
                 if stream_key in self._stream_last_received:
                     del self._stream_last_received[stream_key]
+                if stream_key in self._stream_flash_nonce:
+                    del self._stream_flash_nonce[stream_key]
                 # Keep notify preferences in case stream reconnects
                 self.beginRemoveRows(QtCore.QModelIndex(), drop_idx, drop_idx + 1)
                 self._data = self._data.drop(index=b_match[b_match].index)
@@ -130,6 +134,7 @@ class LSLInfoItemModel:
                 # Update stream activity tracking - when rate is updated, data was received
                 stream_key = (stream_data['name'], stream_data['type'], stream_data['hostname'], stream_data['uid'])
                 self._stream_last_received[stream_key] = time.time()
+                self._stream_flash_nonce[stream_key] = self._stream_flash_nonce.get(stream_key, 0) + 1
                 row_ix = self._data.index[b_row].values[0]
                 col_ix = self._data.columns.get_loc('effective_rate') if isinstance(self, QtCore.QAbstractTableModel)\
                     else 0
@@ -151,7 +156,8 @@ class LSLInfoItemModel:
             self.ChanCountRole: b'channel_count',
             self.ActivityStateRole: b'activityState',
             self.NotifyEnabledRole: b'notifyEnabled',
-            self.StreamLastReceivedRole: b'streamLastReceived'
+            self.StreamLastReceivedRole: b'streamLastReceived',
+            self.ActivityFlashNonceRole: b'activityFlashNonce'
         }
 
     def data(self, index: QtCore.QModelIndex, role: int = QtCore.Qt.DisplayRole) -> typing.Any:
@@ -191,6 +197,9 @@ class LSLInfoItemModel:
                 return 'No data received yet'
             ts = self._stream_last_received[stream_key]
             return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))
+        elif role == self.ActivityFlashNonceRole:
+            stream_key = (row['name'], row['type'], row['hostname'], row['uid'])
+            return self._stream_flash_nonce.get(stream_key, 0)
         else:
             rns = self.roleNames()
             if role in rns.keys():

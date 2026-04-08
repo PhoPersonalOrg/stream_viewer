@@ -18,6 +18,8 @@ Rectangle {
                 color: "lightgrey"
                 width: parent ? parent.width : 0
                 height: 80
+                property int activityFlashNonce: model.activityFlashNonce
+                onActivityFlashNonceChanged: { if (activityFlashNonce > 0) activityLed.triggerFlash() }
                 GridLayout {
                     anchors.margins: 2
                     clip: true
@@ -37,17 +39,29 @@ Rectangle {
                         Layout.row: 0; Layout.column: 2
                         spacing: 5
                         Rectangle {
-                            id: activityLight
-                            width: 14
-                            height: 14
-                            radius: 7
+                            id: activityLed
+                            width: 16
+                            height: 16
+                            radius: 8
                             border.width: 1
                             border.color: "#888"
-                            color: {
+                            property bool flashOn: false
+                            property color idleColor: {
                                 if (activityState === 'active') return '#00ff00'
-                                else if (activityState === 'warning') return '#ffaa00'
-                                else if (activityState === 'critical') return '#ff0000'
-                                else return 'gray'
+                                if (activityState === 'warning') return '#ffaa00'
+                                if (activityState === 'critical') return '#ff0000'
+                                return 'gray'
+                            }
+                            color: flashOn ? 'lime' : idleColor
+                            function triggerFlash() {
+                                flashOn = true
+                                flashTimer.restart()
+                            }
+                            Timer {
+                                id: flashTimer
+                                interval: 120
+                                repeat: false
+                                onTriggered: activityLed.flashOn = false
                             }
                         }
                         CheckBox {
@@ -85,10 +99,10 @@ Rectangle {
                     onDoubleClicked: OuterWidget.activated(index)  // console.warn("Double clicked " + index)
                 }
                 MouseArea {
-                    x: activityLight.mapToItem(delegateRoot, 0, 0).x
-                    y: activityLight.mapToItem(delegateRoot, 0, 0).y
-                    width: activityLight.width
-                    height: activityLight.height
+                    x: activityLed.mapToItem(delegateRoot, 0, 0).x
+                    y: activityLed.mapToItem(delegateRoot, 0, 0).y
+                    width: activityLed.width
+                    height: activityLed.height
                     z: 1
                     hoverEnabled: true
                     acceptedButtons: Qt.NoButton
