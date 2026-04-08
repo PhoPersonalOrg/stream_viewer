@@ -31,14 +31,18 @@ Rectangle {
                         font.pointSize: 13
                         font.bold: false
                         Layout.row: 0; Layout.column: 0
+                        Layout.fillWidth: true
                     }
                     Text {
                         text: '<b>Type:</b> ' + type
                         Layout.row: 0; Layout.column: 1
+                        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                        horizontalAlignment: Text.AlignRight
                     }
                     Row {
                         id: statusRow
                         Layout.row: 0; Layout.column: 2
+                        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                         spacing: 5
                         Rectangle {
                             id: activityLed
@@ -70,18 +74,24 @@ Rectangle {
                     Text {
                         text: '<b>Host:</b> ' + hostname
                         Layout.row: 1; Layout.column: 0
+                        Layout.fillWidth: true
                     }
                     Text {
                         text: '<b>Channels:</b> ' + channel_count + " (" + channel_format + ")"
                         Layout.row: 1; Layout.column: 1
+                        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                        horizontalAlignment: Text.AlignRight
                     }
                     Text {
                         text: '<b>Nom.Rate:</b> ' + nominal_srate
                         Layout.row: 2; Layout.column: 0
+                        Layout.fillWidth: true
                     }
                     Text {
                         text: '<b>Eff.Rate:</b> ' + effective_rate
                         Layout.row: 2; Layout.column: 1
+                        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                        horizontalAlignment: Text.AlignRight
                     }
 //                    Text {
 //                        text: uid; elide: Text.ElideRight; Layout.preferredWidth: 150
