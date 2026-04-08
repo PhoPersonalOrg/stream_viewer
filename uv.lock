@@ -4623,7 +4623,7 @@ wheels = [
 
 [[package]]
 name = "stream-viewer"
-version = "0.30.5"
+version = "0.30.6"
 source = { editable = "." }
 dependencies = [
     { name = "cython" },

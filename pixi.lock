@@ -4462,8 +4462,8 @@ packages:
   - cython ; extra == 'tests'
 - pypi: ./
   name: stream-viewer
-  version: 0.30.5
-  sha256: 3fb0cb84bd3003496a9389b8681e9bb74ab9c46b1abc30bc64b7345dd852cf33
+  version: 0.30.6
+  sha256: eeea08ef0b04919cd8abd8d9917e5e9fd27d2db6a913d7811da98b8f0628f155
   requires_dist:
   - numpy
   - matplotlib>=3.7.5
