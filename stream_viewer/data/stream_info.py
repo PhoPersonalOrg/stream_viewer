@@ -49,9 +49,8 @@ class LSLInfoItemModel:
     ChanFmtRole = QtCore.Qt.UserRole + 8
     ChanCountRole = QtCore.Qt.UserRole + 9
     ActivityStateRole = QtCore.Qt.UserRole + 10
-    NotifyEnabledRole = QtCore.Qt.UserRole + 11
-    StreamLastReceivedRole = QtCore.Qt.UserRole + 12
-    ActivityFlashNonceRole = QtCore.Qt.UserRole + 13
+    StreamLastReceivedRole = QtCore.Qt.UserRole + 11
+    ActivityFlashNonceRole = QtCore.Qt.UserRole + 12
 
     def __init__(self, refresh_interval=None):
         super().__init__()
@@ -59,7 +58,6 @@ class LSLInfoItemModel:
         self._resolver = pylsl.ContinuousResolver()
         self._stream_last_received = {}  # Track last received timestamp per stream: {(name, type, hostname, uid): timestamp}
         self._stream_flash_nonce = {}  # Increments on each handleRateUpdated for QML activity LED flash
-        self._stream_notify_enabled = {}  # Track notify preferences per stream: {(name, type, hostname, uid): bool}
         self.refresh()
         if refresh_interval is not None:
             self._refresh_timer = QtCore.QTimer()
@@ -104,7 +102,6 @@ class LSLInfoItemModel:
                     del self._stream_last_received[stream_key]
                 if stream_key in self._stream_flash_nonce:
                     del self._stream_flash_nonce[stream_key]
-                # Keep notify preferences in case stream reconnects
                 self.beginRemoveRows(QtCore.QModelIndex(), drop_idx, drop_idx + 1)
                 self._data = self._data.drop(index=b_match[b_match].index)
                 self.endRemoveRows()
@@ -155,7 +152,6 @@ class LSLInfoItemModel:
             self.ChanFmtRole: b'channel_format',
             self.ChanCountRole: b'channel_count',
             self.ActivityStateRole: b'activityState',
-            self.NotifyEnabledRole: b'notifyEnabled',
             self.StreamLastReceivedRole: b'streamLastReceived',
             self.ActivityFlashNonceRole: b'activityFlashNonce'
         }
@@ -188,9 +184,6 @@ class LSLInfoItemModel:
                 else:
                     return 'critical'
             return 'none'
-        elif role == self.NotifyEnabledRole:
-            stream_key = (row['name'], row['type'], row['hostname'], row['uid'])
-            return self._stream_notify_enabled.get(stream_key, False)
         elif role == self.StreamLastReceivedRole:
             stream_key = (row['name'], row['type'], row['hostname'], row['uid'])
             if stream_key not in self._stream_last_received:
@@ -208,20 +201,6 @@ class LSLInfoItemModel:
                     return "irreg." if dat == 0 else f"{dat:.2f}"
                 return dat
         return None
-
-    def setNotifyEnabled(self, stream_key: tuple, enabled: bool):
-        """Set notify preference for a stream."""
-        self._stream_notify_enabled[stream_key] = enabled
-        # Find and update the model index to trigger QML update
-        b_row = (self._data['name'] == stream_key[0]) \
-                & (self._data['type'] == stream_key[1]) \
-                & (self._data['hostname'] == stream_key[2]) \
-                & (self._data['uid'] == stream_key[3])
-        if np.any(b_row):
-            row_ix = self._data.index[b_row].values[0]
-            col_ix = 0 if isinstance(self, QtCore.QAbstractListModel) else self._data.columns.get_loc('name')
-            cell_index = self.index(row_ix, col_ix)
-            self.dataChanged.emit(cell_index, cell_index, [self.NotifyEnabledRole])
 
 
 class LSLStreamInfoListModel(LSLInfoItemModel, QtCore.QAbstractListModel):

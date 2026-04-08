@@ -28,8 +28,8 @@ Rectangle {
                     rows: 3
                     Text {
                         text: name
-                        font.pointSize: 14
-                        font.bold: true
+                        font.pointSize: 13
+                        font.bold: false
                         Layout.row: 0; Layout.column: 0
                     }
                     Text {
@@ -64,13 +64,6 @@ Rectangle {
                                 interval: 120
                                 repeat: false
                                 onTriggered: activityLed.flashOn = false
-                            }
-                        }
-                        CheckBox {
-                            id: notifyCheckbox
-                            checked: notifyEnabled
-                            onCheckedChanged: {
-                                OuterWidget.setNotifyEnabled(index, checked)
                             }
                         }
                     }
