@@ -3389,8 +3389,8 @@ packages:
   sha256: 25feaf46135f0fb1e61b69513dc97c477285ba98a69204bf5a8cf241a844a718
 - pypi: ../PhoPyLSLhelper
   name: phopylslhelper
-  version: 1.0.2
-  sha256: b912233ed3c9c56f0da57aa3b7c7e002dd96ee7925022b4bd75f2ba7a19361bf
+  version: 1.0.3
+  sha256: 4754f1c83c5e40bbc4374059a28135ada486f34d84f3ce0a96e1f6f453c2df92
   requires_dist:
   - pylsl>=1.16.2
   - pytz>=2025.2
@@ -3400,8 +3400,8 @@ packages:
   requires_python: '>=3.8.10'
 - pypi: ../PhoPyMNEHelper
   name: phopymnehelper
-  version: 0.3.3
-  sha256: 259df25cc9e1c179814192adeba13ca401f7af8742ba9af674532f26069f3d32
+  version: 0.3.4
+  sha256: 3806ee76a8a67593d4709a736bb7df4c636b9ce8ed9aa6d6ba08095ab65760d2
   requires_dist:
   - pyvistaqt>=0.11.3
   - trame>=3.12.0

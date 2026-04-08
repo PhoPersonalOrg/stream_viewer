@@ -3116,7 +3116,7 @@ wheels = [
 
 [[package]]
 name = "phopylslhelper"
-version = "1.0.2"
+version = "1.0.3"
 source = { editable = "../PhoPyLSLhelper" }
 dependencies = [
     { name = "attrs" },
@@ -3137,7 +3137,7 @@ provides-extras = ["video"]
 
 [[package]]
 name = "phopymnehelper"
-version = "0.3.3"
+version = "0.3.4"
 source = { editable = "../PhoPyMNEHelper" }
 dependencies = [
     { name = "autoreject" },
