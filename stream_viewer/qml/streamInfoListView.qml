@@ -44,36 +44,45 @@ Rectangle {
                         Layout.row: 0; Layout.column: 2
                         Layout.rowSpan: 3
                         Layout.alignment: Qt.AlignRight | Qt.AlignTop
-                        spacing: 4
-                        Rectangle {
-                            id: activityLed
-                            width: 16
+                        Layout.preferredWidth: 22
+                        Layout.maximumWidth: 22
+                        Layout.fillWidth: false
+                        width: 22
+                        spacing: 2
+                        Item {
+                            width: statusColumn.width
                             height: 16
-                            radius: 8
-                            border.width: 1
-                            border.color: "#888"
-                            property bool flashOn: false
-                            property color idleColor: {
-                                if (activityState === 'active') return '#00ff00'
-                                if (activityState === 'warning') return '#ffaa00'
-                                if (activityState === 'critical') return '#ff0000'
-                                return 'gray'
-                            }
-                            color: flashOn ? 'lime' : idleColor
-                            function triggerFlash() {
-                                flashOn = true
-                                flashTimer.restart()
-                            }
-                            Timer {
-                                id: flashTimer
-                                interval: 120
-                                repeat: false
-                                onTriggered: activityLed.flashOn = false
+                            Rectangle {
+                                id: activityLed
+                                anchors.right: parent.right
+                                width: 16
+                                height: 16
+                                radius: 8
+                                border.width: 1
+                                border.color: "#888"
+                                property bool flashOn: false
+                                property color idleColor: {
+                                    if (activityState === 'active') return '#00ff00'
+                                    if (activityState === 'warning') return '#ffaa00'
+                                    if (activityState === 'critical') return '#ff0000'
+                                    return 'gray'
+                                }
+                                color: flashOn ? 'lime' : idleColor
+                                function triggerFlash() {
+                                    flashOn = true
+                                    flashTimer.restart()
+                                }
+                                Timer {
+                                    id: flashTimer
+                                    interval: 120
+                                    repeat: false
+                                    onTriggered: activityLed.flashOn = false
+                                }
                             }
                         }
                         ToolButton {
-                            implicitWidth: 22
-                            implicitHeight: 22
+                            width: statusColumn.width
+                            height: 22
                             flat: true
                             font.pixelSize: 14
                             text: "\u2699"
@@ -81,8 +90,8 @@ Rectangle {
                             onClicked: OuterWidget.openStreamConfig(index)
                         }
                         ToolButton {
-                            implicitWidth: 22
-                            implicitHeight: 22
+                            width: statusColumn.width
+                            height: 22
                             flat: true
                             font.pixelSize: 14
                             text: "\u2139"
@@ -119,7 +128,7 @@ Rectangle {
                 }
                 MouseArea {
                     anchors.fill: parent
-                    anchors.rightMargin: 60
+                    anchors.rightMargin: 32
                     onClicked: streamlist.currentIndex = index
                     onDoubleClicked: OuterWidget.activated(index)  // console.warn("Double clicked " + index)
                 }
