@@ -8,32 +8,29 @@ as stacked subplots with linked time axes and bootstrap confidence intervals, in
 time_frequency_global_field_power example.
 
 Reference: https://mne.tools/stable/auto_examples/time_frequency/time_frequency_global_field_power.html
+
+Computation vs display (integration)
+--------------------------------------
+**Pure signal processing** (shared): band-pass filtering, GFP, baseline correction,
+and bootstrap CIs live in ``phopymnehelper.analysis.computations.gfp_band_power`` so the
+same math can drive timeline detail renderers without importing stream_viewer.
+
+**stream_viewer-only**: timer via :class:`~stream_viewer.renderers.display.pyqtgraph.PGRenderer`,
+buffered multi-source data from :class:`~stream_viewer.renderers.data.base.RendererDataTimeSeries.fetch_data`,
+``plot_mode`` (Sweep vs Scroll time wrapping), pyqtgraph layout (stacked ``PlotItem``s, linked x-axes),
+and y-axis auto-range throttling.
+
+Orchestration entry point for each frame: :meth:`LinePowerVis.update_visualization`.
 """
 
-import json
+from typing import Optional
+
 import numpy as np
-from scipy import signal
 from qtpy import QtGui
 import pyqtgraph as pg
+from phopymnehelper.analysis.computations.gfp_band_power import BAND_COLORS_RGB as BAND_COLORS, STANDARD_EEG_FREQUENCY_BANDS as FREQUENCY_BANDS, bandpass_filter_channels, baseline_rescale, bootstrap_gfp_ci, global_field_power
 from stream_viewer.renderers.data.base import RendererDataTimeSeries
 from stream_viewer.renderers.display.pyqtgraph import PGRenderer
-
-
-# Standard EEG frequency bands
-FREQUENCY_BANDS = [
-    ('Theta', 4, 7),
-    ('Alpha', 8, 12),
-    ('Beta', 13, 25),
-    ('Gamma', 30, 45),
-]
-
-# Colors inspired by matplotlib's winter_r colormap (reversed for visual clarity)
-BAND_COLORS = [
-    (0, 255, 127),    # Theta - spring green
-    (0, 191, 191),    # Alpha - cyan-ish
-    (0, 127, 255),    # Beta - dodger blue
-    (0, 63, 255),     # Gamma - blue
-]
 
 
 class LinePowerVis(RendererDataTimeSeries, PGRenderer):
@@ -73,7 +70,7 @@ class LinePowerVis(RendererDataTimeSeries, PGRenderer):
         # New parameters
         filter_order: int = 4,
         n_bootstrap: int = 100,
-        baseline_start: float = None,
+        baseline_start: Optional[float] = None,
         baseline_end: float = 0.0,
         show_confidence: bool = False,
         line_width: float = 0.5,
@@ -233,160 +230,6 @@ class LinePowerVis(RendererDataTimeSeries, PGRenderer):
         # Reduce spacing between subplots
         self._widget.ci.setSpacing(2.)
 
-    def _get_filter_sos(self, fmin, fmax, srate):
-        """
-        Get or create bandpass filter coefficients (second-order sections).
-
-        Args:
-            fmin: Lower cutoff frequency in Hz.
-            fmax: Upper cutoff frequency in Hz.
-            srate: Sampling rate in Hz.
-
-        Returns:
-            SOS filter coefficients.
-        """
-        cache_key = (fmin, fmax, srate)
-        if cache_key not in self._filter_cache:
-            nyq = srate / 2.0
-            low = fmin / nyq
-            high = min(fmax / nyq, 0.99)  # Ensure below Nyquist
-
-            if low >= high or low <= 0:
-                return None
-
-            try:
-                sos = signal.butter(self._filter_order, [low, high], btype='band', output='sos')
-                self._filter_cache[cache_key] = sos
-            except ValueError:
-                return None
-
-        return self._filter_cache.get(cache_key)
-
-    def _bandpass_filter(self, data, fmin, fmax, srate):
-        """
-        Apply bandpass filter to data.
-
-        Args:
-            data: 2D array (n_channels, n_samples).
-            fmin: Lower cutoff frequency in Hz.
-            fmax: Upper cutoff frequency in Hz.
-            srate: Sampling rate in Hz.
-
-        Returns:
-            Filtered data with same shape as input.
-        """
-        sos = self._get_filter_sos(fmin, fmax, srate)
-        if sos is None:
-            return data
-
-        # Handle NaN values by interpolating
-        filtered = np.zeros_like(data)
-        for ch_idx in range(data.shape[0]):
-            ch_data = data[ch_idx, :]
-            valid_mask = np.isfinite(ch_data)
-
-            if not np.any(valid_mask):
-                filtered[ch_idx, :] = 0
-                continue
-
-            if np.all(valid_mask):
-                # No NaNs, filter directly
-                try:
-                    filtered[ch_idx, :] = signal.sosfiltfilt(sos, ch_data)
-                except ValueError:
-                    filtered[ch_idx, :] = ch_data
-            else:
-                # Interpolate NaNs, filter, then restore NaNs
-                interp_data = ch_data.copy()
-                valid_indices = np.where(valid_mask)[0]
-                invalid_indices = np.where(~valid_mask)[0]
-
-                if len(valid_indices) >= 2:
-                    interp_data[invalid_indices] = np.interp(
-                        invalid_indices, valid_indices, ch_data[valid_indices]
-                    )
-                    try:
-                        filtered[ch_idx, :] = signal.sosfiltfilt(sos, interp_data)
-                    except ValueError:
-                        filtered[ch_idx, :] = interp_data
-                else:
-                    filtered[ch_idx, :] = 0
-
-        return filtered
-
-    def _compute_gfp(self, data):
-        """
-        Compute Global Field Power (sum of squares across channels).
-
-        Args:
-            data: 2D array (n_channels, n_samples).
-
-        Returns:
-            1D array of GFP values (n_samples,).
-        """
-        return np.sum(data ** 2, axis=0)
-
-    def _baseline_rescale(self, gfp, t_vec):
-        """
-        Apply baseline correction to GFP.
-
-        Args:
-            gfp: 1D array of GFP values.
-            t_vec: Time vector corresponding to gfp.
-
-        Returns:
-            Baseline-corrected GFP.
-        """
-        if self._baseline_start is None and self._baseline_end is None:
-            return gfp
-
-        # Determine baseline indices
-        start_t = self._baseline_start if self._baseline_start is not None else t_vec[0]
-        end_t = self._baseline_end if self._baseline_end is not None else t_vec[-1]
-
-        baseline_mask = (t_vec >= start_t) & (t_vec <= end_t)
-
-        if not np.any(baseline_mask):
-            return gfp
-
-        baseline_mean = np.nanmean(gfp[baseline_mask])
-
-        if baseline_mean != 0 and np.isfinite(baseline_mean):
-            return gfp / baseline_mean - 1
-        return gfp
-
-    def _bootstrap_ci(self, data, stat_fun=None):
-        """
-        Compute bootstrap confidence intervals.
-
-        Args:
-            data: 2D array (n_channels, n_samples).
-            stat_fun: Function to compute statistic. Default is sum of squares.
-
-        Returns:
-            Tuple of (ci_lower, ci_upper) arrays.
-        """
-        if stat_fun is None:
-            stat_fun = lambda x: np.sum(x ** 2, axis=0)
-
-        n_channels = data.shape[0]
-        n_samples = data.shape[1]
-
-        # Bootstrap resampling
-        rng = np.random.default_rng()
-        boot_stats = np.zeros((self._n_bootstrap, n_samples))
-
-        for i in range(self._n_bootstrap):
-            indices = rng.integers(0, n_channels, size=n_channels)
-            boot_data = data[indices, :]
-            boot_stats[i, :] = stat_fun(boot_data)
-
-        # Compute percentiles for CI
-        ci_lower = np.percentile(boot_stats, 2.5, axis=0)
-        ci_upper = np.percentile(boot_stats, 97.5, axis=0)
-
-        return ci_lower, ci_upper
-
     def update_visualization(self, data, timestamps) -> None:
         """Update the visualization with new data."""
         if not any([np.any(_) for _ in timestamps[0]]):
@@ -432,14 +275,9 @@ class LinePowerVis(RendererDataTimeSeries, PGRenderer):
             if fmin >= srate / 2:
                 continue
 
-            # Bandpass filter
-            filtered_data = self._bandpass_filter(combined_data, fmin, fmax, srate)
-
-            # Compute GFP
-            gfp = self._compute_gfp(filtered_data)
-
-            # Apply baseline correction
-            gfp = self._baseline_rescale(gfp, t_vec)
+            filtered_data = bandpass_filter_channels(combined_data, fmin, fmax, srate, self._filter_order, self._filter_cache)
+            gfp = global_field_power(filtered_data)
+            gfp = baseline_rescale(gfp, t_vec, self._baseline_start, self._baseline_end)
 
             # Handle sweep/scroll mode for time display
             if self.plot_mode == "Sweep":
@@ -453,11 +291,9 @@ class LinePowerVis(RendererDataTimeSeries, PGRenderer):
 
             # Update confidence intervals if enabled
             if self._show_confidence and band_idx < len(self._ci_upper_curves):
-                ci_low, ci_up = self._bootstrap_ci(filtered_data)
-
-                # Apply baseline correction to CI as well
-                ci_low = self._baseline_rescale(ci_low, t_vec)
-                ci_up = self._baseline_rescale(ci_up, t_vec)
+                ci_low, ci_up = bootstrap_gfp_ci(filtered_data, self._n_bootstrap)
+                ci_low = baseline_rescale(ci_low, t_vec, self._baseline_start, self._baseline_end)
+                ci_up = baseline_rescale(ci_up, t_vec, self._baseline_start, self._baseline_end)
 
                 self._ci_lower_curves[band_idx].setData(display_t, gfp - ci_low)
                 self._ci_upper_curves[band_idx].setData(display_t, gfp + ci_up)
