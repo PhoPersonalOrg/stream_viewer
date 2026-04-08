@@ -34,7 +34,8 @@ class StreamInfoListView(QtWidgets.QListView):
 
 
 class StreamStatusQMLWidget(QtWidgets.QWidget):
-
+    """ a stream status indicator widget for a single stream that shows its info, connection status, and activity (via a little indicator light) 
+    """
     stream_activated = QtCore.Signal(dict)
     stream_added = QtCore.Signal(dict)
     stream_removed = QtCore.Signal()
