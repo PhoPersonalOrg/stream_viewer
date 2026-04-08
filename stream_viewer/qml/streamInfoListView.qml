@@ -17,7 +17,7 @@ Rectangle {
                 id: delegateRoot
                 color: "lightgrey"
                 width: parent ? parent.width : 0
-                height: 80
+                height: 92
                 property int activityFlashNonce: model.activityFlashNonce
                 onActivityFlashNonceChanged: { if (activityFlashNonce > 0) activityLed.triggerFlash() }
                 GridLayout {
@@ -39,11 +39,12 @@ Rectangle {
                         Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                         horizontalAlignment: Text.AlignRight
                     }
-                    Row {
-                        id: statusRow
+                    Column {
+                        id: statusColumn
                         Layout.row: 0; Layout.column: 2
-                        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
-                        spacing: 5
+                        Layout.rowSpan: 3
+                        Layout.alignment: Qt.AlignRight | Qt.AlignTop
+                        spacing: 4
                         Rectangle {
                             id: activityLed
                             width: 16
@@ -69,6 +70,24 @@ Rectangle {
                                 repeat: false
                                 onTriggered: activityLed.flashOn = false
                             }
+                        }
+                        ToolButton {
+                            implicitWidth: 22
+                            implicitHeight: 22
+                            flat: true
+                            font.pixelSize: 14
+                            text: "\u2699"
+                            ToolTip.text: "Config"
+                            onClicked: OuterWidget.openStreamConfig(index)
+                        }
+                        ToolButton {
+                            implicitWidth: 22
+                            implicitHeight: 22
+                            flat: true
+                            font.pixelSize: 14
+                            text: "\u2139"
+                            ToolTip.text: "Info"
+                            onClicked: OuterWidget.printStreamInfo(index)
                         }
                     }
                     Text {
@@ -100,6 +119,7 @@ Rectangle {
                 }
                 MouseArea {
                     anchors.fill: parent
+                    anchors.rightMargin: 60
                     onClicked: streamlist.currentIndex = index
                     onDoubleClicked: OuterWidget.activated(index)  // console.warn("Double clicked " + index)
                 }

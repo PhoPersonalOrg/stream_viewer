@@ -85,6 +85,42 @@ class StreamStatusQMLWidget(QtWidgets.QWidget):
         # TODO: How can we track _what_ was removed?
         self.stream_removed.emit()
 
+
+    @QtCore.Slot(int)
+    def printStreamInfo(self, index):
+        if index < 0 or index >= len(self.model._data):
+            return
+        strm = self.model._data.iloc[index].to_dict()
+        print('--- LSL stream info ---')
+        for k, v in strm.items():
+            print(f'  {k}: {v}')
+        print('-----------------------')
+
+
+    @QtCore.Slot(int)
+    def openStreamConfig(self, index):
+        if index < 0 or index >= len(self.model._data):
+            return
+        strm = self.model._data.iloc[index].to_dict()
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle(f"Configure stream — {strm.get('name', index)}")
+        form = QtWidgets.QFormLayout(dlg)
+        col_names = getattr(self.model, 'col_names', None)
+        shown = set()
+        if col_names is not None:
+            for key in col_names:
+                if key in strm:
+                    form.addRow(key, QtWidgets.QLabel(str(strm[key])))
+                    shown.add(key)
+        for key in sorted(strm.keys()):
+            if key not in shown:
+                form.addRow(key, QtWidgets.QLabel(str(strm[key])))
+        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
+        bb.accepted.connect(dlg.accept)
+        form.addRow(bb)
+        dlg.exec_()
+
+
     def _check_stream_activity(self):
         """Check stream activity and show alerts if needed."""
         if not hasattr(self.model, '_stream_last_received'):
