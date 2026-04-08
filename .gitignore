@@ -149,3 +149,4 @@ templating/uv_deps_switcher/backups
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+.qtcreator

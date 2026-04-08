@@ -50,6 +50,7 @@ class LSLInfoItemModel:
     ChanCountRole = QtCore.Qt.UserRole + 9
     ActivityStateRole = QtCore.Qt.UserRole + 10
     NotifyEnabledRole = QtCore.Qt.UserRole + 11
+    StreamLastReceivedRole = QtCore.Qt.UserRole + 12
 
     def __init__(self, refresh_interval=None):
         super().__init__()
@@ -149,7 +150,8 @@ class LSLInfoItemModel:
             self.ChanFmtRole: b'channel_format',
             self.ChanCountRole: b'channel_count',
             self.ActivityStateRole: b'activityState',
-            self.NotifyEnabledRole: b'notifyEnabled'
+            self.NotifyEnabledRole: b'notifyEnabled',
+            self.StreamLastReceivedRole: b'streamLastReceived'
         }
 
     def data(self, index: QtCore.QModelIndex, role: int = QtCore.Qt.DisplayRole) -> typing.Any:
@@ -183,6 +185,12 @@ class LSLInfoItemModel:
         elif role == self.NotifyEnabledRole:
             stream_key = (row['name'], row['type'], row['hostname'], row['uid'])
             return self._stream_notify_enabled.get(stream_key, False)
+        elif role == self.StreamLastReceivedRole:
+            stream_key = (row['name'], row['type'], row['hostname'], row['uid'])
+            if stream_key not in self._stream_last_received:
+                return 'No data received yet'
+            ts = self._stream_last_received[stream_key]
+            return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))
         else:
             rns = self.roleNames()
             if role in rns.keys():

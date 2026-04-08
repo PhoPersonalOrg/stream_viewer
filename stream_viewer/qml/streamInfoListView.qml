@@ -14,6 +14,7 @@ Rectangle {
         anchors.margins: 1
         delegate:
             Rectangle {
+                id: delegateRoot
                 color: "lightgrey"
                 width: parent ? parent.width : 0
                 height: 80
@@ -32,6 +33,7 @@ Rectangle {
                         Layout.row: 0; Layout.column: 1
                     }
                     Row {
+                        id: statusRow
                         Layout.row: 0; Layout.column: 2
                         spacing: 5
                         Rectangle {
@@ -81,6 +83,18 @@ Rectangle {
                     anchors.fill: parent
                     onClicked: streamlist.currentIndex = index
                     onDoubleClicked: OuterWidget.activated(index)  // console.warn("Double clicked " + index)
+                }
+                MouseArea {
+                    x: activityLight.mapToItem(delegateRoot, 0, 0).x
+                    y: activityLight.mapToItem(delegateRoot, 0, 0).y
+                    width: activityLight.width
+                    height: activityLight.height
+                    z: 1
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                    ToolTip.text: streamLastReceived
+                    ToolTip.visible: containsMouse
+                    ToolTip.delay: 400
                 }
                 ListView.onAdd: {
                     OuterWidget.added(index)
