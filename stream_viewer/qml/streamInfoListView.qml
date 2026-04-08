@@ -27,7 +27,9 @@ Rectangle {
                     columns: 3
                     rows: 3
                     Text {
-                        text: '<b>Name:</b> ' + name
+                        text: name
+                        font.pointSize: 14
+                        font.bold: true
                         Layout.row: 0; Layout.column: 0
                     }
                     Text {
