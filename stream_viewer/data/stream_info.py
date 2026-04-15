@@ -102,7 +102,12 @@ class LSLInfoItemModel:
                     del self._stream_last_received[stream_key]
                 if stream_key in self._stream_flash_nonce:
                     del self._stream_flash_nonce[stream_key]
-                self.beginRemoveRows(QtCore.QModelIndex(), drop_idx, drop_idx + 1)
+                # beginRemoveRows uses an inclusive [first, last] range.
+                # We remove exactly one row here, so first == last.
+                self.beginRemoveRows(QtCore.QModelIndex(), drop_idx, drop_idx)
+
+                # self.beginRemoveRows(QtCore.QModelIndex(), drop_idx, drop_idx + 1) ## PREV did this but wasn't quite working, only returning one stream
+
                 self._data = self._data.drop(index=b_match[b_match].index)
                 self.endRemoveRows()
 

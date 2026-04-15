@@ -22,9 +22,15 @@ from stream_viewer.renderers import load_renderer, list_renderers, get_kwargs_fr
 from stream_viewer.utils.optional_imports import PYPHOTIMELINE_AVAILABLE
 
 if PYPHOTIMELINE_AVAILABLE:
+    from pypho_timeline.widgets.live.live_mixins import LSLConnectedViewerMixin
     from pypho_timeline.widgets.simple_timeline_widget import SimpleTimelineWidget
     from pypho_timeline.core.synchronized_plot_mode import SynchronizedPlotMode
-    from stream_viewer.timeline import StreamViewerLSLTrackDatasource
+else:
+    # LSLConnectedViewerMixin
+    from stream_viewer.utils.live_mixins import LSLConnectedViewerMixin
+
+from stream_viewer.timeline import StreamViewerLSLTrackDatasource
+
 
 # Suppress console window on Windows
 if sys.platform == 'win32':
@@ -46,7 +52,9 @@ if sys.platform == 'win32':
 logger = logging.getLogger(__name__)
 
 
-class LSLViewer(QtWidgets.QMainWindow):
+
+
+class LSLViewer(LSLConnectedViewerMixin, QtWidgets.QMainWindow):
     RENDERER = 'LineVis'
 
     def __init__(self, settings_path: str = None):
@@ -84,32 +92,11 @@ class LSLViewer(QtWidgets.QMainWindow):
         """
         super().__init__()
 
-        self._open_renderers = []  # List of renderer keys (rend_cls :: strm_name :: int)
-        self._plugin_dirs = {'renderers': [], 'widgets': []}  # Dict of lists of directories to search for plugins
-                                                              #  in addition to default search dir of
-                                                              #  ~/.stream_viewer/plugins/{renderers|widgets}
-        self._monitor_sources = {}
+        self.LSLConnectedViewerMixin_on_init(settings_path=settings_path) ## updates: self.stream_status_model, self.stream_status_widget
+        self.setWindowTitle("LSLViewer - Stream Viewer")
 
-        self.setWindowTitle("Stream Viewer")
-        home_dir = Path(QtCore.QStandardPaths.writableLocation(QtCore.QStandardPaths.HomeLocation))
-        self._settings_path = home_dir / '.stream_viewer' / 'lsl_viewer.ini'
-        if settings_path is not None:
-            settings_path = Path(settings_path)
-            if not settings_path.exists():
-                # Try only the filename in the default folder.
-                settings_path = home_dir / '.stream_viewer' / settings_path.name
-            if settings_path.exists():
-                self._settings_path = settings_path
-
-        # Set the data model for the stream status view. This handles its own list of streams.
-        self.stream_status_model = LSLStreamInfoTableModel(refresh_interval=5.0)
-        # Create the stream status panel.
-        self.stream_status_widget = StreamStatusQMLWidget(self.stream_status_model)
-        # self.stream_status_widget.setSizePolicy(QtWidgets.QSizePolicy.Preferred,
-        #                                         QtWidgets.QSizePolicy.MinimumExpanding)
-        self.stream_status_widget.stream_activated.connect(self.on_stream_activated)
-        self.stream_status_widget.stream_added.connect(self.on_stream_added)
-        self.setup_status_panel()
+        self.LSLConnectedViewerMixin_on_setup()
+        self.LSLConnectedViewerMixin_on_buildUI()
 
         # Setup console output panel
         self.setup_console_panel()
@@ -154,17 +141,6 @@ class LSLViewer(QtWidgets.QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction(self._console_act)
 
-    def setup_status_panel(self):
-        dock = QtWidgets.QDockWidget()
-        dock.setObjectName("StatusPanel")
-        dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea)
-        dock.setMinimumWidth(300)
-        dock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetClosable)
-        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, dock)
-        dock.setWidget(self.stream_status_widget)
-        dock.setFloating(False)
-        # Prevent the dock from floating by monitoring topLevelChanged signal
-        dock.topLevelChanged.connect(lambda floating: dock.setFloating(False) if floating else None)
 
     def setup_console_panel(self):
         """Set up the console output dock widget."""
@@ -523,8 +499,7 @@ class LSLViewer(QtWidgets.QMainWindow):
 
     @QtCore.Slot(dict)
     def on_stream_added(self, strm):
-        self._monitor_sources[strm['uid']] = LSLDataSource(strm, auto_start=True, timer_interval=1000,
-                                                           monitor_only=True)
+        self._monitor_sources[strm['uid']] = LSLDataSource(strm, auto_start=True, timer_interval=1000, monitor_only=True)
         self._monitor_sources[strm['uid']].rate_updated.connect(
             functools.partial(self.stream_status_widget.model.handleRateUpdated, stream_data=strm)
         )
@@ -642,6 +617,8 @@ class LSLViewer(QtWidgets.QMainWindow):
         
         settings.endGroup()
         settings.endGroup()
+
+
 
     def _on_open_timeline(self, sources):
         """Open a timeline dock with one track per LSL source using StreamViewerLSLTrackDatasource."""
