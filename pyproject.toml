@@ -21,7 +21,7 @@ dependencies = [
     "numpy>=1.26.4,<2",
     "matplotlib>=3.10.8,<4",
     "packaging",
-    "pandas>=2.3.3,<3",
+    "pandas>=1.5.3,<3.0.0",
     "pylsl>=1.18.1,<2",
     "pyopengl>=3.1.10,<4",
     "pyqt5>=5.15.11,<6",
@@ -39,22 +39,22 @@ dependencies = [
     "python-levenshtein>=0.27.3,<0.28",
     "pyaudio>=0.2.14,<0.3",
     "slimgui>=0.7.0,<0.8",
-    "ipykernel>=7.2.0,<8",
+    "ipykernel",
     "ipywidgets>=8.1.8,<9",
     "dearpygui>=2.2,<3",
     "cython>=3.2.4,<4",
     "pyvistaqt>=0.11.4,<0.12",
     "pyvista>=0.46.5,<0.47",
     "phopymnehelper>=0.3.7,<0.4",
-    "phopyqthelper>=0.1.0,<0.2",
+    # "phopyqthelper>=0.1.0,<0.2",
     # "rerun-sdk==0.29.2; sys_platform != 'darwin'"
     # "dive",
     "setuptools",
     "wheel>=0.46.3,<0.47",
     "torch>=2.10.0,<3",
-    "mkdocs>=1.6.1,<2",
-    "mkdocs-material>=9.7.6,<10",
-    "mkdocstrings-python>=2.0.3,<3",
+    # "mkdocs>=1.6.1,<2",
+    # "mkdocs-material>=9.7.6,<10",
+    # "mkdocstrings-python>=2.0.3,<3",
     "pygments>=2.20.0,<3",
     "pymdown-extensions>=10.21.2,<11",
     "pyinstaller",
@@ -91,8 +91,8 @@ exclude = ["icons*", "docs*", "dist*"]
 # This avoids git conflicts when working across different directory layouts
 mne = { path = "../mne-python", editable = true }
 phopymnehelper = { path = "../PhoPyMNEHelper", editable = true }
-phopyqthelper = { path = "../phopyqthelper", editable = true }
 py-pho-timeline = { path = "../pyPhoTimeline", editable = true }
+# phopyqthelper = { path = "../phopyqthelper", editable = true }
 # dive = { path = "../DIVE", editable = true }
 
 [dependency-groups]
