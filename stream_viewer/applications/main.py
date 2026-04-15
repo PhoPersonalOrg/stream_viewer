@@ -6,6 +6,7 @@ import functools
 import argparse
 import logging
 import time
+from typing import Dict, List, Tuple, Optional, Callable, Union, Any
 from pathlib import Path
 from qtpy import QtWidgets, QtCore
 from qtpy.QtGui import QIcon, QKeySequence
@@ -16,7 +17,7 @@ from stream_viewer.data import LSLStreamInfoTableModel
 from stream_viewer.widgets import load_widget
 from stream_viewer.widgets import ConfigAndRenderWidget
 from stream_viewer.widgets import StreamStatusQMLWidget
-from phopyqthelper.widgets import ConsoleOutputWidget
+from stream_viewer.widgets.console_output import ConsoleOutputWidget
 from stream_viewer.renderers import load_renderer, list_renderers, get_kwargs_from_settings
 from stream_viewer.utils.optional_imports import PYPHOTIMELINE_AVAILABLE
 

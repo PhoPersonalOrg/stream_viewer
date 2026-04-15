@@ -1,3 +1,4 @@
+from typing import Dict, List, Tuple, Optional, Callable, Union, Any
 from pathlib import Path
 import pandas as pd
 import time
@@ -35,14 +36,17 @@ class StreamInfoListView(QtWidgets.QListView):
 class StreamStatusQMLWidget(QtWidgets.QWidget):
     """ a stream status indicator widget for a single stream that shows its info, connection status, and activity (via a little indicator light) 
     """
-    stream_activated = QtCore.Signal(dict)
+    stream_activated = QtCore.Signal(dict) ## this signal indicates that a stream has been double-clicked by the user, as if to add a new widget/track for that stream
     stream_added = QtCore.Signal(dict)
     stream_removed = QtCore.Signal()
 
-    def __init__(self, model, parent=None):
+    stream_timed_out = QtCore.Signal(dict) ## called when a previously connected/recieving stream became inactive for longer than its specified timeout
+
+    def __init__(self, model, stream_alert_timeout_max_seconds: Optional[float]=None, parent=None):
         super().__init__(parent)
         self.model = model
         self.monitor_sources = {}
+        self._stream_alert_timeout_max_seconds = stream_alert_timeout_max_seconds
         self._alerted_streams = set()  # Track streams that have been alerted to prevent spam
 
         self.view = QtQuick.QQuickView()
