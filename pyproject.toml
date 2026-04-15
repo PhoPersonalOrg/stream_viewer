@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stream-viewer"
-version = "0.30.6"
+version = "0.30.7"
 description = 'Tools to visualize data streamed with Lab Streaming Layer'
 keywords = ["lsl", "lab streaming layer", "streaming", "visualization", "eeg", "neural data"]
 readme = "docs/README.md"
@@ -14,43 +14,52 @@ authors = [
     {name="Pho Hale", email="PhoHale@gmail.com"}
 ]
 license = {text = "MIT"}
-requires-python = ">=3.10,<3.12"
+requires-python = ">=3.11,<3.12"
 classifiers = [
     "Programming Language :: Python :: 3"]
 dependencies = [
-    "numpy",
-    "matplotlib>=3.7.5",
+    "numpy>=1.26.4,<2",
+    "matplotlib>=3.10.8,<4",
     "packaging",
-    "pandas",
-    "pylsl>=1.16.2",
-    "pyopengl",
-    "pyqt5==5.15.11",
-    "pyqt5-qt5==5.15.2",
-    "pyqtgraph",
-    "qtpy",
-    "scipy",
-    "visbrain",
-    "vispy",
-    "mne>=1.6.1",
-    "eegsynth>=0.8.0",
-    "python-rtmidi>=1.5.8",
-    "sounddevice>=0.4.6",
-    "redis>=6.1.1",
-    "python-levenshtein>=0.25.1",
-    "pyaudio>=0.2.14",
-    "slimgui>=0.6.0",
-    "ipykernel>=6.29",
-    "ipywidgets>=8.1.8",
-    "dearpygui>=2.1.1",
-    "cython>=3.2.3",
-    "pyvistaqt>=0.11.3",
-    "pyvista>=0.46.4",
-    "phopymnehelper",
-    "phopyqthelper",
+    "pandas>=2.3.3,<3",
+    "pylsl>=1.18.1,<2",
+    "pyopengl>=3.1.10,<4",
+    "pyqt5>=5.15.11,<6",
+    "pyqt5-qt5>=5.15.2,<6",
+    "pyqtgraph>=0.14.0,<0.15",
+    "qtpy>=2.4.3,<3",
+    "scipy>=1.17.1,<2",
+    "visbrain>=0.4.5,<0.5",
+    "vispy>=0.16.1,<0.17",
+    "mne",
+    "eegsynth>=0.8.1,<0.9",
+    "python-rtmidi>=1.5.8,<2",
+    "sounddevice>=0.5.5,<0.6",
+    "redis>=7.4.0,<8",
+    "python-levenshtein>=0.27.3,<0.28",
+    "pyaudio>=0.2.14,<0.3",
+    "slimgui>=0.7.0,<0.8",
+    "ipykernel>=7.2.0,<8",
+    "ipywidgets>=8.1.8,<9",
+    "dearpygui>=2.2,<3",
+    "cython>=3.2.4,<4",
+    "pyvistaqt>=0.11.4,<0.12",
+    "pyvista>=0.46.5,<0.47",
+    "phopymnehelper>=0.3.7,<0.4",
+    "phopyqthelper>=0.1.0,<0.2",
     # "rerun-sdk==0.29.2; sys_platform != 'darwin'"
     # "dive",
-    "setuptools>=81.0.0",
-    "wheel>=0.46.3",
+    "setuptools",
+    "wheel>=0.46.3,<0.47",
+    "torch>=2.10.0,<3",
+    "mkdocs>=1.6.1,<2",
+    "mkdocs-material>=9.7.6,<10",
+    "mkdocstrings-python>=2.0.3,<3",
+    "pygments>=2.20.0,<3",
+    "pymdown-extensions>=10.21.2,<11",
+    "pyinstaller",
+    "vulture>=2.16,<3",
+    "pyflakes>=3.4.0,<4",
 ]
 
 [project.optional-dependencies]
@@ -90,7 +99,7 @@ py-pho-timeline = { path = "../pyPhoTimeline", editable = true }
 dev = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.6.23",
-    "mkdocstrings>=0.24,<0.25",
+    "mkdocstrings>=0.24", # ,<0.25
     "mkdocstrings-python>=1.10",
     "pygments>=2.19.2",
     "pymdown-extensions>=10.15",
